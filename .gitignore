@@ -20,3 +20,6 @@ helper/dist/stick_log.txt
 # Python
 *.pyc
 __pycache__/
+
+# Intermediate manual HTML — the .md is source, .pdf is the output
+USER_MANUAL.html
