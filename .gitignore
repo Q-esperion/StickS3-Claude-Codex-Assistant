@@ -1,0 +1,22 @@
+# PlatformIO build + library cache (hundreds of MB, regeneratable)
+.pio/
+downloads/
+
+# PyInstaller build staging + cached logs/config
+helper/build/
+helper/__pycache__/
+helper/stick_log.txt
+helper/config.json
+helper/dist/config.json
+helper/dist/stick_log.txt
+
+# MacOS / editor cruft
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+*.pyc
+__pycache__/
