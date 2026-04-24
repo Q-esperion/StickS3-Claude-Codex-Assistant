@@ -65,6 +65,9 @@ DEFAULT_CONFIG = {
     "udp_port": 8766,
     "discovery_enabled": True,
     "autostart": False,
+    # When non-null, /type will focus this window before pasting. Captured
+    # via tray menu "绑定当前窗口为输入目标". Shape: {"title": "...", "class": "..."}.
+    "target_window": None,
     "corrections": [
         ["克拉克", "Claude"],
         ["克劳德", "Claude"],
@@ -191,6 +194,92 @@ user32.SetClipboardData.restype  = wintypes.HANDLE
 user32.CloseClipboard.argtypes   = ()
 user32.CloseClipboard.restype    = wintypes.BOOL
 
+# Window-focus APIs (for "always type into the bound terminal" feature).
+user32.GetForegroundWindow.argtypes = ()
+user32.GetForegroundWindow.restype  = wintypes.HWND
+user32.GetWindowTextW.argtypes      = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+user32.GetWindowTextW.restype       = ctypes.c_int
+user32.GetClassNameW.argtypes       = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+user32.GetClassNameW.restype        = ctypes.c_int
+user32.IsWindow.argtypes            = (wintypes.HWND,)
+user32.IsWindow.restype             = wintypes.BOOL
+user32.IsWindowVisible.argtypes     = (wintypes.HWND,)
+user32.IsWindowVisible.restype      = wintypes.BOOL
+user32.SwitchToThisWindow.argtypes  = (wintypes.HWND, wintypes.BOOL)
+user32.SwitchToThisWindow.restype   = None
+user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+user32.SetForegroundWindow.restype  = wintypes.BOOL
+user32.BringWindowToTop.argtypes    = (wintypes.HWND,)
+user32.BringWindowToTop.restype     = wintypes.BOOL
+user32.ShowWindow.argtypes          = (wintypes.HWND, ctypes.c_int)
+user32.ShowWindow.restype           = wintypes.BOOL
+_ENUM_WNDPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+user32.EnumWindows.argtypes         = (_ENUM_WNDPROC, wintypes.LPARAM)
+user32.EnumWindows.restype          = wintypes.BOOL
+
+SW_RESTORE = 9
+
+
+def _window_info(hwnd):
+    buf = ctypes.create_unicode_buffer(256)
+    user32.GetWindowTextW(hwnd, buf, 256)
+    title = buf.value
+    buf2 = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, buf2, 256)
+    cls = buf2.value
+    return title, cls
+
+
+def capture_current_window():
+    """Return {title, class} of the current foreground window, or None."""
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return None
+    title, cls = _window_info(hwnd)
+    if not cls:
+        return None
+    return {"title": title, "class": cls}
+
+
+def find_target_window():
+    """Find a visible window matching CONFIG['target_window'] criteria.
+    Returns HWND or None. Match: class exact + title contains saved title
+    (so terminal titles that change with cwd still match)."""
+    tgt = CONFIG.get("target_window") or {}
+    if not tgt or not tgt.get("class"):
+        return None
+    want_cls = tgt["class"]
+    want_title = (tgt.get("title") or "").strip()
+    found = [None]
+
+    def cb(hwnd, _lp):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        title, cls = _window_info(hwnd)
+        if cls != want_cls:
+            return True
+        # Title fragment match (empty substring always matches).
+        if want_title and want_title not in title:
+            return True
+        found[0] = hwnd
+        return False  # stop enumeration
+
+    user32.EnumWindows(_ENUM_WNDPROC(cb), 0)
+    return found[0]
+
+
+def focus_window(hwnd):
+    """Best-effort bring-to-foreground for an arbitrary HWND. Uses
+    SwitchToThisWindow which sidesteps the usual SetForegroundWindow
+    restrictions on modern Windows."""
+    if not hwnd or not user32.IsWindow(hwnd):
+        return False
+    user32.ShowWindow(hwnd, SW_RESTORE)     # unminimize if needed
+    user32.SwitchToThisWindow(hwnd, True)   # documented to work w/o focus-steal block
+    user32.BringWindowToTop(hwnd)
+    user32.SetForegroundWindow(hwnd)
+    return True
+
 
 def set_clipboard_text(text: str) -> bool:
     data = text.encode("utf-16le") + b"\x00\x00"
@@ -253,6 +342,13 @@ def send_enter():
 
 
 def paste_and_enter(text: str, press_enter: bool = True) -> bool:
+    # If the user has bound a target window (tray menu), bring it to
+    # foreground first so the clipboard paste lands there regardless of
+    # whatever the user was looking at when voice-input fired.
+    tgt = find_target_window()
+    if tgt:
+        focus_window(tgt)
+        time.sleep(0.12)   # give Windows a beat to actually raise + focus
     if not set_clipboard_text(text): return False
     time.sleep(0.06)
     send_ctrl_v()
@@ -565,6 +661,8 @@ def open_config_dialog():
             "udp_port": udp_port,
             "discovery_enabled": discovery_var.get(),
             "autostart": autostart_var.get(),
+            # Preserve the bound target window across config-dialog saves.
+            "target_window": CONFIG.get("target_window"),
             "corrections": corr,
         }
         save_config(new_cfg)
@@ -589,6 +687,34 @@ def open_log_folder(icon=None, item=None):
         os.startfile(_THIS_DIR)
     except Exception as e:
         print(f"[warn] open log folder: {e}")
+
+
+def on_bind_target(icon=None, item=None):
+    """User wants to lock voice input to a specific window. Give them 3
+    seconds to focus their target (e.g. the terminal running Claude Code),
+    then capture that window's title + class."""
+    def do():
+        # Countdown via tooltip so user can see what's happening.
+        for n in (3, 2, 1):
+            try: icon.title = f"绑定窗口中… {n}"
+            except Exception: pass
+            time.sleep(1)
+        info = capture_current_window()
+        try: icon.title = f"StickS3 助手 — {local_ip()}:{CONFIG['http_port']}"
+        except Exception: pass
+        if not info:
+            print("[bind] no foreground window captured")
+            return
+        CONFIG["target_window"] = info
+        save_config(CONFIG)
+        print(f"[bind] locked to: {info['class']!r} / title~{info['title']!r}")
+    threading.Thread(target=do, daemon=True).start()
+
+
+def on_clear_target(icon=None, item=None):
+    CONFIG["target_window"] = None
+    save_config(CONFIG)
+    print("[bind] target window cleared")
 
 
 def on_quit(icon, item=None):
@@ -638,8 +764,21 @@ def start_tray():
     ip = local_ip()
     title = f"StickS3 助手 — {ip}:{CONFIG['http_port']}"
 
+    def target_status(_=None):
+        tgt = CONFIG.get("target_window")
+        if not tgt:
+            return "目标窗口: 跟随焦点（未绑定）"
+        t = (tgt.get("title") or "").strip() or "(无标题)"
+        if len(t) > 28: t = t[:28] + "…"
+        return f"目标: {t}"
+
     menu = pystray.Menu(
         pystray.MenuItem(f"IP: {ip}:{CONFIG['http_port']}", None, enabled=False),
+        pystray.MenuItem(target_status, None, enabled=False),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("绑定当前窗口为输入目标 (3 秒后抓取)",
+                         lambda icon, item: on_bind_target(icon, item)),
+        pystray.MenuItem("清除绑定（恢复跟随焦点）", on_clear_target),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("打开配置", lambda icon, item: threading.Thread(
             target=open_config_dialog, daemon=True).start()),
