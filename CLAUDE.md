@@ -10,34 +10,32 @@ G:\M5Stack StickS3\
 ├── partitions_8MB_huge.csv           # 双 OTA 分区（app0/app1 各 3.5MB + spiffs 0.95MB）
 ├── .claude/settings.json             # Claude Code 钩子（Pre/Post/Stop/UserPrompt → hook_notify.py）
 ├── src/
-│   ├── app.h                         # 共享常量 + 函数原型
-│   ├── main.cpp                      # setup()/loop()、draw_title/status、Claude 标志、屏保、stick_log
-│   ├── menu.cpp                      # 主菜单（当前 7 项，顺序见下）
-│   ├── wifi_mgr.cpp                  # WiFiManager 配网 + NTP + 自动重连事件处理
-│   ├── app_clock.cpp                 # 桌面：NTP 时钟 + 杭州天气 + B 站粉丝(UID 8466490)
+│   ├── app.h                         # 共享常量 + 函数原型 + g_radio_owns_i2s
+│   ├── main.cpp                      # setup()/loop()、draw_title（含 WiFi 信号格 + 电量）、屏保、异步 stick_log
+│   ├── menu.cpp                      # 主菜单（当前 6 项，顺序见下）
+│   ├── wifi_mgr.cpp                  # WiFiManager 配网（城市码+B站UID 配网页同时填）+ NTP + 自动重连
+│   ├── app_clock.cpp                 # 仪表盘：NTP 时钟 + 天气 + B 站粉丝（NVS 可配置）
 │   ├── app_ir.cpp                    # 红外学习/回放（4 个槽位，NVS 存储）
-│   ├── app_sound.cpp                 # 麦克风：dB 计 + FFT 频谱
-│   ├── app_radio.cpp                 # 网络电台（25 台，ESP32-audioI2S）
-│   ├── app_voicekb.cpp               # Claude 语音助手（讯飞 STT + PC 助手 + 活动日志）
-│   ├── app_ota.cpp                   # OTA 升级模式（停音频/关麦克风/ArduinoOTA）
-│   └── app_settings.cpp              # 音量/亮度/自动旋转/屏幕超时，NVS 持久化
+│   ├── app_radio.cpp                 # 网络电台（22 台，ESP32-audioI2S）— 见"电台 I2S 接力"
+│   ├── app_voicekb.cpp               # Claude 小秘书（讯飞 STT + PC 助手 + 活动日志）
+│   ├── app_ota.cpp                   # OTA 升级模式（停音频/关麦克风/ArduinoOTA + 进度条）
+│   └── app_settings.cpp              # 音量/亮度/自动旋转/屏幕超时/WiFi 配网，NVS 持久化
 ├── helper/
 │   ├── type_server.py                # Windows 托盘助手（粘贴 + /status + /log + UDP 发现）
-│   ├── hook_notify.py                # Claude Code 钩子脚本 → POST /status_event
+│   ├── hook_notify.py                # Claude Code 钩子脚本 → POST /status
 │   ├── stick_log.txt                 # 板子和助手的事件日志（调试用）
-│   └── dist/StickHelper.exe          # PyInstaller 打包的托盘 exe（可选）
+│   └── dist/StickS3Helper.exe        # PyInstaller 打包的托盘 exe（写日志/配置到 dist/ 下）
 └── downloads/                        # PlatformIO 工具链离线包（可忽略）
 ```
 
 ## 主菜单（顺序固定）
 
-1. **桌面** — 时钟 / 天气 / B 站粉丝
-2. **红外遥控** — 学习 / 回放
-3. **声音** — 分贝 / 频谱
-4. **网络电台** — 在线收音机
-5. **Claude 语音助手** — 语音输入到 PC + 实时显示 Claude 活动
-6. **OTA 升级** — 无线烧录固件
-7. **设置** — 音量 / 亮度 / 屏幕超时 / 自动旋转（固定最后一项，用户要求）
+1. **Claude 小秘书** — 语音输入到 PC + 实时显示 Claude 活动
+2. **仪表盘** — 时钟 / 天气 / B 站粉丝（城市码和 UID 进 WiFi 配网页填）
+3. **红外遥控** — 学习 / 回放
+4. **网络电台** — 在线收音机（22 台）
+5. **OTA 升级** — 无线烧录固件
+6. **设置** — 音量 / 亮度 / 屏幕超时 / 自动旋转 / WiFi 配网（固定最后一项）
 
 ## 构建和烧录
 
@@ -81,10 +79,46 @@ python -m platformio run -d "G:/M5Stack StickS3" -t upload --upload-port 192.168
 - **屏幕频闪**：M5GFX 默认背光 PWM ~1kHz 有可见频闪。`main.cpp` 里 `ledcSetup(3, 20000, 8) + ledcAttachPin(38, 3)` 强制 20kHz，`apply_brightness()` 直接 `ledcWrite(3, ...)`。
 - **全屏刷新闪烁**：改用 `M5Canvas g_canvas`（PSRAM 离屏画布），每帧先画到画布再 `pushSprite(0,0)`。
 - **音频库 C++20 依赖**：`schreibfaul1/ESP32-audioI2S` 新版引入 `<span>`，pin 到 `3.0.0` 避开。
-- **电台切台后无声**：`Audio.connecttohost` 前强制 `stopSong() + delay(120)` 彻底清缓冲；另外加看门狗 `isRunning()` 检测流中断。
+- **StickS3 的 I2S 数据引脚是 GPIO 14，不是 16**：ES8311 codec 的 DIN 接在 14。M5Unified `_speaker_enabled_cb_sticks3` 里的 `spk_cfg.pin_data_out = GPIO_NUM_14` 是官方定义。用 16 能编译、`isRunning()` 返回 true、但声音**压根送不到 codec**，表现是"电流声或静默"。今天花了半天才定位。**参考 Audio 库示例时别抄他们的 16，StickS3 是 14**。
+- **`M5.Speaker.end()` 会悄悄把 codec + 功放电源全关**：它的 `_cb_set_enabled(false)` 会 `bitOff(py32pmic @ 0x6E, reg 0x11, bit 3)` 关掉扬声器功放电轨，再把 ES8311 DAC 断电。Audio 库接管 I2S 后**毫不知情**，只负责写样本，codec 没电不工作 = 没声音。`app_radio.cpp` 的 `restoreStickS3CodecPower()` 手动按 M5Unified enable 序列（`bitOn 0x6E/0x11/bit3` + ES8311 的 8 个寄存器写）重新上电。**这也是之前电台"随机哑掉 / 只有电流声"的真正根因**，所有 fade / debounce / recreate 都是治标。
+- **Audio 库析构函数会阻塞 task WDT 触发 panic**：`~Audio()` 里 `client.stop()` / `clientsecure.stop()` 等 TCP FIN 握手，**长会话积累后能阻塞 > 5 秒**，FreeRTOS Task WDT 触发 → 整板 PANIC。退出电台时**故意不 delete**，直接 `s_audio = nullptr` 泄漏 10KB，避开 dtor。30 次进出之后还有余量。
+- **电台切台**：只需 `stopSong() + delay(100) + connecttohost()`，不要任何 fade / debounce / state machine——那些都是被假 bug 骗出来的。连上后 watchdog 检测 `isRunning()`，死流提示用户按 B 重试即可。
+- **电台 I2S 接力（两头都要手动操心 codec）**：见下面"电台 I2S 接力"一节。
 - **语音键盘蓝牙方案 fail**：T-vK/ESP32-BLE-Keyboard + NimBLE 在 S3 上连接不稳；改用 **HTTP POST 到 PC 助手** 方案。
 - **讯飞 STT 要 GMT 时间**：签名需要当前时间，WiFi 一连上就 `configTzTime`。
 - **PC 助手原先 pyautogui/pyperclip 不稳**：多次迭代后改用 **Win32 剪贴板 API + SendInput Ctrl+V**。记得对所有 API 显式设 `argtypes`（64 位 HANDLE 不能用默认 c_int，会 OverflowError）。
+- **剪贴板 `GlobalAlloc` 泄漏**：`set_clipboard_text` 失败路径（`GlobalLock`/`SetClipboardData` 返 false）要 `GlobalFree(hmem)`，成功时置 null 让 finally 别 free。
+- **`stick_log` 异步化**：同步 HTTP POST（600ms 超时）在助手关着时每次 `stick_log` 阻塞主循环 → 进 App 卡 1-2 秒。改成 FreeRTOS 队列 + 后台 worker（栈 8KB，HTTPClient + mbedTLS 要这么大），连续 3 次失败进入 15 秒冷却。
+- **PyInstaller frozen 路径陷阱**：`__file__` 在 exe 运行时指向 `_MEIxxx` 临时目录，exe 退出就删。`type_server.py` 的 `_THIS_DIR` 要 `getattr(sys, "frozen") ? dirname(sys.executable) : dirname(__file__)`，否则 `config.json` 和 `stick_log.txt` 都写到看不见的地方。
+
+## 电台 I2S 接力（M5.Speaker ↔ Audio lib）
+
+两个库都想独占 I2S0，硬件上只有一条到 ES8311 codec 的路。架构上：
+- **非电台时**：M5.Speaker 占用 I2S，负责开机提示音、按键 beep、设置里的音量提示音
+- **电台运行中**：Audio 库占用 I2S，`g_radio_owns_i2s = true` 把 `beep_ok` / `apply_volume` 静默掉
+
+**进电台（握手）**：
+```cpp
+M5.Speaker.end();              // 停 spk_task、卸 I2S 驱动、通过回调关 codec
+delay(300);
+i2s_driver_uninstall(I2S_NUM_0);  // 兜底
+restoreStickS3CodecPower();    // 手动 I2C 写 py32pmic + ES8311，重新上电
+s_audio = new Audio();         // Audio 库的构造函数内部 i2s_driver_install
+s_audio->setPinout(17, 15, 14, 18);  // BCLK/LRC/DOUT/MCLK
+g_radio_owns_i2s = true;
+```
+
+**退电台（交还）**：
+```cpp
+stopPlay();                    // Audio 停流
+i2s_driver_uninstall(I2S_NUM_0);  // 把 Audio 的 I2S 驱动卸掉
+s_audio = nullptr;             // 故意不 delete（dtor panic）
+g_radio_owns_i2s = false;
+M5.Speaker.begin();            // 装自己的 I2S 驱动，通过回调 codec 上电
+apply_volume();
+```
+
+每次进电台会泄漏约 10KB（老 Audio 实例）。300KB 堆可以扛 30 次进出，日常使用足够，重启清零。
 
 ## 语音键盘链路（当前方案）
 
@@ -102,7 +136,7 @@ python -m platformio run -d "G:/M5Stack StickS3" -t upload --upload-port 192.168
 
 PC 助手是 **Windows 托盘程序**，常驻运行两种启动方式：
 - 开发期：`python "G:/M5Stack StickS3/helper/type_server.py"`
-- 打包后：双击 `helper/dist/StickHelper.exe`（PyInstaller 打的单文件 exe）
+- 打包后：双击 `helper/dist/StickS3Helper.exe`（PyInstaller 打的单文件 exe；`config.json` 和 `stick_log.txt` 也写在 `dist/` 下，不进临时目录）
 
 托盘右键菜单可打开配置对话框（tkinter），里面能改端口、开关 UDP 发现、设置开机自启（通过 Startup 文件夹放快捷方式）、编辑纠错表。配置存 `helper/config.json`。
 
@@ -136,17 +170,27 @@ Claude Code (钩子 PreToolUse / PostToolUse / Stop / UserPromptSubmit)
 
 ## 按键约定（所有 App）
 
-- **BtnA**：主动作（菜单切换 / 录音 / 电台下一台 / 等）
-- **BtnB 短按**：确认 / 进入 / 播放停止
-- **BtnB 长按 ~0.9 秒**：返回上一层（菜单里叫"返回主菜单"）
-- 语音键盘特殊：短按 B 在 2 秒冷静期后是"测试发送"（发 `hello from StickS3`）
+- **BtnA 短按**：主动作（菜单切换 / 录音 / 电台下一台 / 等）
+- **BtnA 长按 ~0.9 秒**：逆向动作（电台里 = 上一台；其他 App 暂未用）
+- **BtnB 短按**：确认 / 进入 / 播放暂停
+- **BtnB 长按 ~0.9 秒**：返回上一层
+- 菜单里按 B 进 App 时：`menu_run` 会把 B 按压吃干净（内部 `while(isPressed()) delay`）避免进入目标 App 时 B 的释放被误识别（之前栽过音量 +1、电台直接开播等坑）
+- Claude 小秘书特殊：短按 B 在 2 秒冷静期后是"测试发送"（发 `hello from StickS3`）
 - 屏保：默认 60 秒无操作自动熄屏，按任意键唤醒；OTA App 常开屏不熄灭
 
 ## 硬件特性（无法软件修复）
 
 - **充电时喇叭吱啦声**：充电 IC 开关噪声耦合到功放电源，换电源头或用电池能改善
-- **录音时喇叭电流声**：ES8311 codec ADC 和 DAC 共用参考电压，ADC 活动会通过内部耦合漏到 DAC。语音键盘 App 已经 `M5.Speaker.end()` 试过，改善有限
 - **BLE A2DP 不支持**：ESP32-S3 只有 BLE，没蓝牙经典，**连不了蓝牙音箱**
+
+## 标题栏布局（`draw_title()`）
+
+所有 App 共享统一标题栏（22 px 高）：
+```
+[✦ Claude sparkle]  App 名称            [WiFi 信号 3 格]  XX%  [电池图标]
+```
+- WiFi 信号格子根据 `WiFi.RSSI()`：≥ -60 dBm 3 格绿 / ≥ -72 dBm 2 格绿 / ≥ -85 dBm 1 格黄 / < -85 dBm 1 格红 / 未连接 灰 X
+- `draw_status_bar()` 现在是 no-op（底部不再占 16 px），App 底部提示文字可以放到 `SCR_H - 10` 附近
 
 ## 内存系统参考
 
