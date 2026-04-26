@@ -34,14 +34,28 @@ static Bili s_bili;
 static void loadSiteConfig() {
   Preferences p;
   p.begin("site", true);
-  s_city_code = p.getString("city", s_city_code);
-  s_bili_uid  = p.getString("uid",  s_bili_uid);
+  String city = p.getString("city", "");
+  String uid  = p.getString("uid",  "");
   p.end();
+
+  if (city != s_city_code) {
+    s_weather = Weather();
+    s_city_name = "";
+  }
+  if (uid != s_bili_uid) {
+    s_bili = Bili();
+  }
+  s_city_code = city;
+  s_bili_uid = uid;
 }
 
 static bool fetchWeather() {
   if (WiFi.status() != WL_CONNECTED) return false;
-  if (s_city_code.length() == 0) return false;
+  if (s_city_code.length() == 0) {
+    s_weather = Weather();
+    s_city_name = "";
+    return false;
+  }
   HTTPClient http;
   http.setTimeout(6000);
   String url = String("http://t.weather.itboy.net/api/weather/city/") + s_city_code;
@@ -68,7 +82,10 @@ static bool fetchWeather() {
 
 static bool fetchBili() {
   if (WiFi.status() != WL_CONNECTED) return false;
-  if (s_bili_uid.length() == 0) return false;
+  if (s_bili_uid.length() == 0) {
+    s_bili = Bili();
+    return false;
+  }
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;

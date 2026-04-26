@@ -7,7 +7,6 @@
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
-#include "esp_heap_caps.h"
 #include <time.h>
 
 using voice_assistant::base64_encode_bytes;
@@ -27,12 +26,13 @@ static String s_pc_ip   = "";
 static int    s_pc_port = 8765;
 static const int DISCOVERY_UDP_PORT = 8766;
 
-constexpr uint32_t SAMPLE_RATE = 16000;
-constexpr size_t   MAX_SAMPLES = SAMPLE_RATE * 30;  // 30 seconds
+constexpr uint32_t SAMPLE_RATE = voice_assistant::VOICE_SAMPLE_RATE;
+constexpr size_t   MAX_SAMPLES = voice_assistant::VOICE_MAX_SAMPLES;
 constexpr uint32_t CLR_CLAUDE  = 0xE8976Fu;
 
 static int16_t* s_pcm = nullptr;
 static size_t   s_pcm_len = 0;
+static bool     s_mic_active = false;
 
 static WebSocketsClient s_ws;
 static String s_stt_result;
@@ -349,12 +349,20 @@ static String doSTT() {
                     + "date: " + date + "\n"
                     + "GET /v2/iat HTTP/1.1";
   String sig_b64 = hmac_sha256_b64(sig_origin, xf_api_secret);
+  if (sig_b64.length() == 0) {
+    s_stt_error_detail = "鉴权签名失败";
+    return "";
+  }
 
   String auth_origin = String("api_key=\"") + xf_api_key +
                        "\", algorithm=\"hmac-sha256\", "
                        "headers=\"host date request-line\", "
                        "signature=\"" + sig_b64 + "\"";
   String auth_b64 = base64_encode_str(auth_origin);
+  if (auth_b64.length() == 0) {
+    s_stt_error_detail = "鉴权编码失败";
+    return "";
+  }
 
   String path = String("/v2/iat?authorization=") + url_encode(auth_b64)
               + "&date=" + url_encode(date)
@@ -396,6 +404,12 @@ static String doSTT() {
     size_t chunk = pcm_bytes - offset;
     if (chunk > FRAME_BYTES) chunk = FRAME_BYTES;
     String audio_b64 = base64_encode_bytes(pcm_p + offset, chunk);
+    if (audio_b64.length() == 0) {
+      s_stt_error = true;
+      s_stt_error_detail = "音频编码内存不足";
+      s_ws.disconnect();
+      return "";
+    }
 
     String msg;
     if (first) {
@@ -433,14 +447,20 @@ static String doSTT() {
 // ========= Mic =========
 static void startRecording() {
   s_pcm_len = 0;
-  M5.Mic.begin();
+  if (!s_mic_active) {
+    M5.Mic.begin();
+    s_mic_active = true;
+  }
   delay(5);
   // Mic.begin() can re-enable the codec's speaker amp path as a side effect.
   // Force it off again so we don't hear ADC/clock leakage amplified.
   M5.Speaker.end();
 }
 static void stopRecording() {
-  M5.Mic.end();
+  if (s_mic_active) {
+    M5.Mic.end();
+    s_mic_active = false;
+  }
 }
 static void recordChunk() {
   const size_t CHUNK = 512;
@@ -449,6 +469,13 @@ static void recordChunk() {
     while (M5.Mic.isRecording()) { delay(1); }
     s_pcm_len += CHUNK;
   }
+}
+
+static void leaveVoiceApp() {
+  stopRecording();
+  s_ws.disconnect();
+  M5.Speaker.begin();
+  apply_volume();
 }
 
 // ========= UI =========
@@ -642,13 +669,13 @@ void app_voicekb_run() {
   M5.Speaker.end();
 
   if (!s_pcm) {
-    s_pcm = (int16_t*)heap_caps_malloc(MAX_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    s_pcm = voice_assistant::sharedPcmBuffer();
     if (!s_pcm) {
       s_state = ST_ERROR;
       s_status_text = "PSRAM 分配失败";
       drawUI();
       delay(2000);
-      M5.Speaker.begin(); apply_volume();
+      leaveVoiceApp();
       return;
     }
   }
@@ -680,7 +707,7 @@ void app_voicekb_run() {
       if (!longpress_sent) longpress_sent = true;
     }
     if (longpress_sent && !M5.BtnB.isPressed()) {
-      M5.Speaker.begin(); apply_volume();
+      leaveVoiceApp();
       return;
     }
 

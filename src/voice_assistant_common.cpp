@@ -2,9 +2,20 @@
 
 #include <mbedtls/base64.h>
 #include <mbedtls/md.h>
+#include "esp_heap_caps.h"
 #include <time.h>
 
 namespace voice_assistant {
+
+int16_t* sharedPcmBuffer() {
+  static int16_t* s_pcm = nullptr;
+  if (!s_pcm) {
+    s_pcm = (int16_t*)heap_caps_malloc(
+        VOICE_MAX_SAMPLES * sizeof(int16_t),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  }
+  return s_pcm;
+}
 
 String wsPayloadPreview(const uint8_t* payload, size_t length) {
   String out;

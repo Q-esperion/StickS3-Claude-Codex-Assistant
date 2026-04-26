@@ -4,6 +4,10 @@
 
 namespace voice_assistant {
 
+constexpr uint32_t VOICE_SAMPLE_RATE = 16000;
+constexpr size_t VOICE_MAX_SAMPLES = VOICE_SAMPLE_RATE * 30;  // 30 seconds
+
+int16_t* sharedPcmBuffer();
 String wsPayloadPreview(const uint8_t* payload, size_t length);
 String hmac_sha256_b64(const String& data, const String& key);
 String base64_encode_str(const String& data);

@@ -1,7 +1,7 @@
 {
-  "version": "0.2.0",
+  "version": "0.2.1",
   "url": "https://github.com/bulb888/StickS3-Claude-Codex-Assistant/releases/latest/download/firmware.bin",
-  "sha256": "6b4b9ca5653f8acd9a6558d852d238bf8589a7dbaf61ad9367f1b884eb7a89ee",
-  "size": 2902672,
-  "notes": "助手自更新、诊断导出、发布前体检"
+  "sha256": "8bd83e148789fcb2d172a445302bf05425c28817502bfd4c1c53d552d1e616c0",
+  "size": 2903792,
+  "notes": "固件语音稳定性、共享录音缓冲、仪表盘缓存修复"
 }
