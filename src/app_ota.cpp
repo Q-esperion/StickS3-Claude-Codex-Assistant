@@ -26,6 +26,7 @@ struct RemoteManifest {
   String version;
   String url;
   String sha256;
+  String notes;
   uint32_t size = 0;
 };
 
@@ -271,8 +272,10 @@ static bool fetchRemoteManifest(RemoteManifest& m, String& err) {
   m.version = String((const char*)(doc["version"] | ""));
   m.url     = String((const char*)(doc["url"] | ""));
   m.sha256  = String((const char*)(doc["sha256"] | ""));
+  m.notes   = String((const char*)(doc["notes"] | ""));
   m.size    = doc["size"] | 0;
   m.sha256.toLowerCase();
+  m.notes.replace("\r", "");
 
   if (m.url.length() == 0) {
     err = "manifest 缺 url";
@@ -479,6 +482,13 @@ void app_remote_ota_run() {
                size_buf);
       drawRemoteOTAScreen("发现新版本", found, -1);
       delay(900);
+
+      if (manifest.notes.length() > 0) {
+        String notes = manifest.notes;
+        if (notes.length() > 60) notes = notes.substring(0, 60) + "...";
+        drawRemoteOTAScreen("更新说明", notes.c_str(), -1);
+        delay(1600);
+      }
 
       char ver[64];
       snprintf(ver, sizeof(ver), "%s -> %s", APP_VERSION,

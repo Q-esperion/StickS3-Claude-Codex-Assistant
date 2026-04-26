@@ -1,15 +1,23 @@
 ﻿#include "app.h"
 #include "xfyun_config.h"
+#include "voice_assistant_common.h"
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <HTTPClient.h>
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
-#include <mbedtls/md.h>
-#include <mbedtls/base64.h>
 #include "esp_heap_caps.h"
 #include <time.h>
+
+using voice_assistant::base64_encode_bytes;
+using voice_assistant::base64_encode_str;
+using voice_assistant::hmac_sha256_b64;
+using voice_assistant::http_date;
+using voice_assistant::peelMarker;
+using voice_assistant::url_encode;
+using voice_assistant::wrapLine;
+using voice_assistant::wsPayloadPreview;
 
 static const char* XF_HOST       = "iat-api.xfyun.cn";
 
@@ -67,78 +75,6 @@ static const uint32_t REVEAL_INTERVAL_MS = 500;
 // Independent UI refresh tick so battery / charging icon update quickly
 // even when no Codex status changes.
 static uint32_t s_last_ui_refresh_t = 0;
-
-static String wsPayloadPreview(const uint8_t* payload, size_t length) {
-  String out;
-  size_t n = length > 80 ? 80 : length;
-  out.reserve(n);
-  for (size_t i = 0; i < n; i++) {
-    char c = (char)payload[i];
-    out += (c >= 32 && c <= 126) ? c : '.';
-  }
-  return out.length() ? out : String("unknown");
-}
-
-// ========= HMAC + Base64 helpers =========
-static String hmac_sha256_b64(const String& data, const String& key) {
-  unsigned char hmac[32];
-  mbedtls_md_context_t ctx;
-  mbedtls_md_init(&ctx);
-  mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
-  mbedtls_md_hmac_starts(&ctx, (const unsigned char*)key.c_str(), key.length());
-  mbedtls_md_hmac_update(&ctx, (const unsigned char*)data.c_str(), data.length());
-  mbedtls_md_hmac_finish(&ctx, hmac);
-  mbedtls_md_free(&ctx);
-  char out[64];
-  size_t out_len = 0;
-  mbedtls_base64_encode((unsigned char*)out, sizeof(out), &out_len, hmac, 32);
-  return String(out, out_len);
-}
-static String base64_encode_str(const String& data) {
-  size_t cap = ((data.length() + 2) / 3) * 4 + 4;
-  char* buf = (char*)malloc(cap);
-  if (!buf) return String();   // heap exhausted — return empty, caller will fail gracefully
-  size_t out_len = 0;
-  mbedtls_base64_encode((unsigned char*)buf, cap, &out_len,
-                        (const unsigned char*)data.c_str(), data.length());
-  String r(buf, out_len);
-  free(buf);
-  return r;
-}
-static String base64_encode_bytes(const uint8_t* data, size_t len) {
-  size_t cap = ((len + 2) / 3) * 4 + 4;
-  char* buf = (char*)malloc(cap);
-  if (!buf) return String();
-  size_t out_len = 0;
-  mbedtls_base64_encode((unsigned char*)buf, cap, &out_len, data, len);
-  String r(buf, out_len);
-  free(buf);
-  return r;
-}
-static String url_encode(const String& s) {
-  String r;
-  r.reserve(s.length() * 2);
-  for (unsigned i = 0; i < s.length(); i++) {
-    char c = s[i];
-    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-        (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
-      r += c;
-    } else {
-      char b[4];
-      snprintf(b, sizeof(b), "%%%02X", (unsigned char)c);
-      r += b;
-    }
-  }
-  return r;
-}
-static String http_date() {
-  time_t now = time(nullptr);
-  struct tm gmt;
-  gmtime_r(&now, &gmt);
-  char buf[64];
-  strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT", &gmt);
-  return String(buf);
-}
 
 // ========= PC helper discovery (NVS + UDP broadcast) =========
 
@@ -530,52 +466,6 @@ static const int DIV_X      = 170;
 static const int RIGHT_CX   = 205;
 static const int LOG_TOP    = 26;
 static const int LOG_LINE_H = 17;
-
-// UTF-8 aware truncation: cut at a character boundary, not inside a multi-byte codepoint.
-static String utf8Trim(const String& s, size_t max_bytes) {
-  if (s.length() <= max_bytes) return s;
-  size_t cut = max_bytes;
-  // Back up while the byte at 'cut' is a UTF-8 continuation byte (10xxxxxx).
-  while (cut > 0 && (((uint8_t)s.charAt(cut)) & 0xC0) == 0x80) cut--;
-  return s.substring(0, cut) + "…";
-}
-
-// Split a string into up to 2 display rows. Break at UTF-8 char boundary
-// near max_bytes_per_row. Returns number of rows used (0, 1, or 2).
-static int wrapLine(const String& src, size_t max_bytes, String out[2]) {
-  if (src.length() == 0) { out[0] = ""; return 0; }
-  if (src.length() <= max_bytes) { out[0] = src; return 1; }
-
-  // Find character-boundary split near max_bytes for row 1
-  size_t cut = max_bytes;
-  while (cut > 0 && (((uint8_t)src.charAt(cut)) & 0xC0) == 0x80) cut--;
-  out[0] = src.substring(0, cut);
-
-  String rest = src.substring(cut);
-  if (rest.length() <= max_bytes) {
-    out[1] = rest;
-    return 2;
-  }
-  // Rest is still too long — truncate at char boundary + ellipsis
-  cut = max_bytes;
-  while (cut > 0 && (((uint8_t)rest.charAt(cut)) & 0xC0) == 0x80) cut--;
-  out[1] = rest.substring(0, cut) + "…";
-  return 2;
-}
-
-// Event line may carry an invisible marker in its first 2 bytes:
-//   \x01 U <text>  →  user prompt
-//   \x01 C <text>  →  Codex reply
-//   (no marker)    →  tool event or system message
-// Returns the payload (no marker), writes the marker char (0 if none) to out_kind.
-static String peelMarker(const String& raw, char& out_kind) {
-  out_kind = 0;
-  if (raw.length() >= 2 && (uint8_t)raw.charAt(0) == 0x01) {
-    out_kind = raw.charAt(1);
-    return raw.substring(2);
-  }
-  return raw;
-}
 
 static void drawLeftColumn() {
   g_canvas.setFont(&fonts::efontCN_12);

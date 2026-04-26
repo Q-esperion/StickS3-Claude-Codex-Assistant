@@ -88,6 +88,41 @@ static void drawPortalScreen() {
   push_frame();
 }
 
+static void drawSetupSummaryScreen() {
+  String xf_appid, xf_key, xf_secret;
+  bool xf_ok = xfyun_load_credentials(xf_appid, xf_key, xf_secret);
+
+  Preferences pc_p;
+  pc_p.begin("pc", true);
+  String pc_ip = pc_p.getString("ip", "");
+  int pc_port = pc_p.getInt("port", 0);
+  pc_p.end();
+
+  g_canvas.fillScreen(CLR_BG);
+  draw_title("首次设置");
+  g_canvas.setFont(&fonts::efontCN_14);
+  g_canvas.setTextDatum(top_left);
+
+  int y = 30;
+  g_canvas.setTextColor(CLR_GOOD, CLR_BG);
+  g_canvas.setCursor(8, y); g_canvas.print("WiFi 已连接"); y += 17;
+  g_canvas.setTextColor(CLR_TEXT, CLR_BG);
+  g_canvas.setCursor(8, y); g_canvas.print(WiFi.localIP().toString()); y += 17;
+
+  g_canvas.setTextColor(xf_ok ? CLR_GOOD : CLR_WARN, CLR_BG);
+  g_canvas.setCursor(8, y); g_canvas.print(xf_ok ? "讯飞 API 已配置" : "讯飞 API 未填写"); y += 17;
+
+  bool pc_cached = pc_ip.length() > 0 && pc_port > 0;
+  g_canvas.setTextColor(pc_cached ? CLR_GOOD : CLR_DIM, CLR_BG);
+  g_canvas.setCursor(8, y); g_canvas.print(pc_cached ? "PC 助手已缓存" : "进小秘书自动发现"); y += 17;
+
+  g_canvas.setFont(&fonts::efontCN_12);
+  g_canvas.setTextColor(CLR_DIM, CLR_BG);
+  g_canvas.setCursor(8, y + 4); g_canvas.print("下一步：启动 PC 助手");
+  g_canvas.setTextDatum(top_left);
+  push_frame();
+}
+
 static bool hasStoredWiFiCredentials() {
   wifi_config_t conf;
   memset(&conf, 0, sizeof(conf));
@@ -263,16 +298,8 @@ void wifi_setup(bool force_portal) {
                          + " secret_len=" + xf_secret.length());
     }
     if (force_portal) {
-      g_canvas.fillScreen(CLR_BG);
-      draw_title("WiFi");
-      g_canvas.setFont(&fonts::efontCN_16);
-      g_canvas.setTextColor(CLR_GOOD, CLR_BG);
-      g_canvas.setCursor(6, 32); g_canvas.print("已连接:");
-      g_canvas.setTextColor(CLR_TEXT, CLR_BG);
-      g_canvas.setCursor(6, 52); g_canvas.print(s_ssid);
-      g_canvas.setCursor(6, 72); g_canvas.print(WiFi.localIP().toString());
-      push_frame();
-      delay(900);
+      drawSetupSummaryScreen();
+      delay(2600);
     }
   } else {
     s_ssid = "";

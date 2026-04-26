@@ -48,6 +48,8 @@ from ctypes import wintypes
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
+from status_logic import clean_text, codex_phase_for_text
+
 # Avoid duplicate tray helpers. A second instance cannot bind the ports anyway,
 # and two tray icons make it hard to know which config/log is active.
 _SINGLE_INSTANCE_MUTEX = None
@@ -517,12 +519,7 @@ _codex_phase = "idle"  # idle | thinking | running
 
 
 def _clean_text(s: str) -> str:
-    if not s:
-        return s
-    try:
-        return s.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
-    except Exception:
-        return s.encode("utf-8", errors="ignore").decode("utf-8", errors="ignore")
+    return clean_text(s)
 
 
 def _status_state(channel: str):
@@ -532,11 +529,7 @@ def _status_state(channel: str):
 
 
 def _codex_phase_for_text(text: str) -> str:
-    if text.startswith("\x01U"):
-        return "thinking"
-    if text.startswith("\x01C"):
-        return "idle"
-    return "running"
+    return codex_phase_for_text(text)
 
 
 def add_status(text: str, channel: str = "claude") -> int | None:
@@ -932,6 +925,18 @@ def set_autostart(enable: bool) -> None:
 # ==========================================================================
 # Config dialog (tkinter)
 # ==========================================================================
+def format_target_status(config_key="target_window", label="Claude"):
+    tgt = CONFIG.get(config_key)
+    if not tgt:
+        return f"{label}: 跟随焦点（未绑定）"
+    title = (tgt.get("title") or "").strip() or "(无标题)"
+    if len(title) > 28:
+        title = title[:28] + "…"
+    click_key = "codex_target_click" if config_key == "codex_target_window" else "target_click"
+    suffix = " +点位" if CONFIG.get(click_key) else ""
+    return f"{label}: {title}{suffix}"
+
+
 def open_config_dialog():
     try:
         import tkinter as tk
@@ -942,14 +947,19 @@ def open_config_dialog():
 
     root = tk.Tk()
     root.title("StickS3 小秘书 · 配置")
-    root.geometry("480x520")
+    root.geometry("500x610")
     root.resizable(False, False)
 
     frm = ttk.Frame(root, padding=12)
     frm.pack(fill="both", expand=True)
 
     # IP/port info (read-only)
-    ttk.Label(frm, text=f"本机 IP: {local_ip()}", foreground="gray").pack(anchor="w")
+    ip_var = tk.StringVar(value=f"本机 IP: {local_ip()}")
+    ttk.Label(frm, textvariable=ip_var, foreground="gray").pack(anchor="w")
+    claude_target_var = tk.StringVar(value=format_target_status("target_window", "Claude"))
+    codex_target_var = tk.StringVar(value=format_target_status("codex_target_window", "Codex"))
+    ttk.Label(frm, textvariable=claude_target_var, foreground="gray").pack(anchor="w", pady=(4, 0))
+    ttk.Label(frm, textvariable=codex_target_var, foreground="gray").pack(anchor="w")
 
     row = ttk.Frame(frm); row.pack(fill="x", pady=6)
     ttk.Label(row, text="HTTP 端口").grid(row=0, column=0, sticky="w")
@@ -965,8 +975,33 @@ def open_config_dialog():
     autostart_var = tk.BooleanVar(value=CONFIG.get("autostart", False))
     ttk.Checkbutton(frm, text="开机自动启动", variable=autostart_var).pack(anchor="w", pady=4)
 
+    def refresh_status_labels():
+        ip_var.set(f"本机 IP: {local_ip()}")
+        claude_target_var.set(format_target_status("target_window", "Claude"))
+        codex_target_var.set(format_target_status("codex_target_window", "Codex"))
+
+    def test_target(target_key, label):
+        if not CONFIG.get(target_key):
+            messagebox.showwarning("未绑定目标", f"请先在托盘菜单里绑定 {label} 输入目标，再测试粘贴。")
+            return
+
+        def do():
+            ok = paste_and_enter(f"hello from StickS3 {label}", True, target_key)
+            root.after(0, lambda: messagebox.showinfo(
+                "测试结果" if ok else "测试失败",
+                f"{label} 测试文本已发送。" if ok else f"{label} 测试发送失败，请检查绑定窗口。"
+            ))
+
+        threading.Thread(target=do, daemon=True).start()
+
+    action_row = ttk.Frame(frm); action_row.pack(fill="x", pady=(4, 8))
+    ttk.Button(action_row, text="刷新状态", command=refresh_status_labels).pack(side="left")
+    ttk.Button(action_row, text="打开日志目录", command=open_log_folder).pack(side="left", padx=6)
+    ttk.Button(action_row, text="测试 Claude", command=lambda: test_target("target_window", "Claude")).pack(side="right")
+    ttk.Button(action_row, text="测试 Codex", command=lambda: test_target("codex_target_window", "Codex")).pack(side="right", padx=6)
+
     ttk.Label(frm, text="语音纠错词表（每行一对，格式 `正则=替换`）:").pack(anchor="w", pady=(8, 2))
-    txt = tk.Text(frm, height=12, font=("Consolas", 10))
+    txt = tk.Text(frm, height=10, font=("Consolas", 10))
     txt.pack(fill="both", expand=True)
     for pat, repl in CONFIG["corrections"]:
         txt.insert("end", f"{pat}={repl}\n")
@@ -1185,20 +1220,10 @@ def start_tray():
     ip = local_ip()
     title = f"StickS3 小秘书 — {ip}:{CONFIG['http_port']}"
 
-    def target_status(config_key="target_window", label="Claude"):
-        tgt = CONFIG.get(config_key)
-        if not tgt:
-            return f"{label}: 跟随焦点（未绑定）"
-        t = (tgt.get("title") or "").strip() or "(无标题)"
-        if len(t) > 28: t = t[:28] + "…"
-        click_key = "codex_target_click" if config_key == "codex_target_window" else "target_click"
-        suffix = " +点位" if CONFIG.get(click_key) else ""
-        return f"{label}: {t}{suffix}"
-
     menu = pystray.Menu(
         pystray.MenuItem(f"IP: {ip}:{CONFIG['http_port']}", None, enabled=False),
-        pystray.MenuItem(lambda _: target_status("target_window", "Claude"), None, enabled=False),
-        pystray.MenuItem(lambda _: target_status("codex_target_window", "Codex"), None, enabled=False),
+        pystray.MenuItem(lambda _: format_target_status("target_window", "Claude"), None, enabled=False),
+        pystray.MenuItem(lambda _: format_target_status("codex_target_window", "Codex"), None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("绑定 Claude 输入目标 (3 秒后抓取)",
                          lambda icon, item: on_bind_target(icon, item, "target_window", "Claude")),

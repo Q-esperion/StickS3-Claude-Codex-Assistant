@@ -1,6 +1,11 @@
 #include "app.h"
 #include "remote_ota_config.h"
+#include "xfyun_config.h"
+#include <WiFi.h>
 #include <Preferences.h>
+#include <esp_heap_caps.h>
+#include <esp_ota_ops.h>
+#include <time.h>
 
 static int  s_volume = 6;           // 0..10
 static int  s_brightness = 7;       // 1..10
@@ -80,13 +85,25 @@ void maybe_auto_rotate() {
   }
 }
 
-static int s_cursor = 0;  // 0=volume 1=brightness 2=rotate 3=screen-timeout 4=wifi 5=remote-ota 6=clear-net
-static const int N_ROWS = 7;
+enum SettingRow {
+  ROW_VOLUME = 0,
+  ROW_BRIGHTNESS,
+  ROW_ROTATE,
+  ROW_TIMEOUT,
+  ROW_WIFI,
+  ROW_REMOTE_OTA,
+  ROW_DIAGNOSTICS,
+  ROW_CLEAR_NET,
+  N_ROWS
+};
+
+static int s_cursor = 0;
 static const int PAGE_SIZE = 4;
 static const int N_PAGES = (N_ROWS + PAGE_SIZE - 1) / PAGE_SIZE;
 
 static const char* const SETTINGS_LABELS[N_ROWS] = {
-  "音量", "亮度", "自动旋转", "自动熄屏", "WiFi 配网", "远程 OTA", "清除配网"
+  "音量", "亮度", "自动旋转", "自动熄屏",
+  "WiFi 配网", "远程 OTA", "系统诊断", "清除配网"
 };
 
 static const int TIMEOUT_STEPS[] = { 0, 15, 30, 60, 120, 300 };
@@ -95,6 +112,106 @@ static const int N_TIMEOUT_STEPS = sizeof(TIMEOUT_STEPS) / sizeof(TIMEOUT_STEPS[
 static int timeoutStepIndex() {
   for (int i = 0; i < N_TIMEOUT_STEPS; i++) if (TIMEOUT_STEPS[i] == s_screen_timeout) return i;
   return 3;  // default to 60s
+}
+
+static void drawDiagLine(int y, const char* label, const String& value, uint32_t color = CLR_TEXT) {
+  g_canvas.setFont(&fonts::efontCN_12);
+  g_canvas.setTextDatum(top_left);
+  g_canvas.setTextColor(CLR_DIM, CLR_BG);
+  g_canvas.drawString(label, 8, y);
+  g_canvas.setTextDatum(top_right);
+  g_canvas.setTextColor(color, CLR_BG);
+  g_canvas.setClipRect(74, y, SCR_W - 82, 14);
+  g_canvas.drawString(value, SCR_W - 8, y);
+  g_canvas.clearClipRect();
+  g_canvas.setTextDatum(top_left);
+}
+
+static String kbString(uint32_t bytes) {
+  return String(bytes / 1024UL) + "K";
+}
+
+static String cachedPcAddress() {
+  Preferences p;
+  p.begin("pc", true);
+  String ip = p.getString("ip", "");
+  int port = p.getInt("port", 0);
+  p.end();
+  if (ip.length() == 0 || port <= 0) return "未发现";
+  return ip + ":" + port;
+}
+
+static void drawDiagnostics(int page) {
+  g_canvas.fillScreen(CLR_BG);
+  draw_title("系统诊断");
+  g_canvas.setFont(&fonts::efontCN_12);
+  g_canvas.setTextColor(CLR_DIM, CLR_BG);
+  g_canvas.setTextDatum(middle_right);
+  g_canvas.drawString(String(page + 1) + "/2", SCR_W - 74, 12);
+
+  int y = 28;
+  if (page == 0) {
+    bool wifi = WiFi.status() == WL_CONNECTED;
+    drawDiagLine(y, "WiFi", wifi ? WiFi.SSID() : "未连接", wifi ? CLR_GOOD : CLR_BAD); y += 15;
+    drawDiagLine(y, "IP", wifi ? WiFi.localIP().toString() : "-", wifi ? CLR_TEXT : CLR_DIM); y += 15;
+    drawDiagLine(y, "RSSI", wifi ? String(WiFi.RSSI()) + " dBm" : "-", wifi ? CLR_TEXT : CLR_DIM); y += 15;
+    String pc = cachedPcAddress();
+    drawDiagLine(y, "PC 助手", pc, pc == "未发现" ? CLR_WARN : CLR_GOOD); y += 15;
+    String appid, key, secret;
+    bool xf_ok = xfyun_load_credentials(appid, key, secret);
+    drawDiagLine(y, "讯飞 API", xf_ok ? "已配置" : "缺失", xf_ok ? CLR_GOOD : CLR_WARN); y += 15;
+    time_t now = time(nullptr);
+    drawDiagLine(y, "NTP", now > 1700000000 ? "已同步" : "未同步", now > 1700000000 ? CLR_GOOD : CLR_WARN);
+  } else {
+    const esp_partition_t* part = esp_ota_get_running_partition();
+    drawDiagLine(y, "版本", String(APP_VERSION), CLR_ACCENT); y += 15;
+    drawDiagLine(y, "OTA 槽", part ? String(part->label) : "未知"); y += 15;
+    drawDiagLine(y, "Heap", kbString(ESP.getFreeHeap())); y += 15;
+    drawDiagLine(y, "PSRAM", kbString(ESP.getFreePsram())); y += 15;
+    drawDiagLine(y, "亮度", String(s_brightness) + "/10"); y += 15;
+    drawDiagLine(y, "音量", String(s_volume) + "/10");
+  }
+
+  g_canvas.setFont(&fonts::efontCN_12);
+  g_canvas.setTextColor(CLR_DIM, CLR_BG);
+  g_canvas.setTextDatum(bottom_center);
+  g_canvas.drawString("A 下一页    B 刷新    长按 B 返回", SCR_W / 2, SCR_H - 4);
+  g_canvas.setTextDatum(top_left);
+  push_frame();
+}
+
+static void runDiagnostics() {
+  int page = 0;
+  bool longpress_sent = false;
+  bool b_primed = false;
+  drawDiagnostics(page);
+  while (true) {
+    M5.update();
+    if (screen_saver_tick()) { delay(20); continue; }
+    maybe_auto_rotate();
+
+    if (!b_primed) {
+      if (!M5.BtnB.isPressed()) b_primed = true;
+      delay(20);
+      continue;
+    }
+
+    if (M5.BtnB.pressedFor(LONG_PRESS_MS)) {
+      if (!longpress_sent) { beep_ok(); longpress_sent = true; }
+    }
+    if (longpress_sent && !M5.BtnB.isPressed()) return;
+
+    if (M5.BtnA.wasPressed() && !longpress_sent) {
+      page = (page + 1) % 2;
+      beep_ok();
+      drawDiagnostics(page);
+    }
+    if (M5.BtnB.wasReleased() && !longpress_sent) {
+      beep_ok();
+      drawDiagnostics(page);
+    }
+    delay(20);
+  }
 }
 
 static void drawUI() {
@@ -128,7 +245,7 @@ static void drawUI() {
     g_canvas.setTextDatum(middle_left);
     g_canvas.drawString(SETTINGS_LABELS[i], 8, y + 8);
 
-    if (i < 2) {
+    if (i == ROW_VOLUME || i == ROW_BRIGHTNESS) {
       int v = (i == 0) ? s_volume : s_brightness;
       int maxv = 10;
       char vbuf[8]; snprintf(vbuf, sizeof(vbuf), "%d", v);
@@ -143,12 +260,12 @@ static void drawUI() {
       int fill_w = (int)((float)v / maxv * (bar_w - 2));
       uint32_t bar_color = sel ? CLR_ACCENT : CLR_GOOD;
       if (fill_w > 0) g_canvas.fillRoundRect(bar_x + 1, bar_y + 1, fill_w, bar_h - 2, 2, bar_color);
-    } else if (i == 2) {
+    } else if (i == ROW_ROTATE) {
       g_canvas.setTextDatum(middle_right);
       const char* v = s_auto_rotate ? "开" : "关";
       g_canvas.setTextColor(s_auto_rotate ? CLR_GOOD : CLR_DIM, CLR_BG);
       g_canvas.drawString(v, SCR_W - 8, y + 8);
-    } else if (i == 3) {
+    } else if (i == ROW_TIMEOUT) {
       g_canvas.setTextDatum(middle_right);
       char buf[16];
       if (s_screen_timeout == 0) snprintf(buf, sizeof(buf), "关");
@@ -156,16 +273,20 @@ static void drawUI() {
       else snprintf(buf, sizeof(buf), "%d 分", s_screen_timeout / 60);
       g_canvas.setTextColor(s_screen_timeout == 0 ? CLR_DIM : CLR_GOOD, CLR_BG);
       g_canvas.drawString(buf, SCR_W - 8, y + 8);
-    } else if (i == 4) {
+    } else if (i == ROW_WIFI) {
       // WiFi 配网 — action row, B press triggers portal.
       g_canvas.setTextDatum(middle_right);
       g_canvas.setTextColor(sel ? CLR_ACCENT : CLR_DIM, CLR_BG);
       g_canvas.drawString("点 B 开始", SCR_W - 8, y + 8);
-    } else if (i == 5) {
+    } else if (i == ROW_REMOTE_OTA) {
       // Remote OTA — fetches a GitHub Release manifest if configured.
       g_canvas.setTextDatum(middle_right);
       g_canvas.setTextColor(sel ? CLR_ACCENT2 : CLR_DIM, CLR_BG);
       g_canvas.drawString("点 B 检查", SCR_W - 8, y + 8);
+    } else if (i == ROW_DIAGNOSTICS) {
+      g_canvas.setTextDatum(middle_right);
+      g_canvas.setTextColor(sel ? CLR_ACCENT2 : CLR_DIM, CLR_BG);
+      g_canvas.drawString("点 B 查看", SCR_W - 8, y + 8);
     } else {
       // 清除配网 — clears WiFi, site, and iFlytek credentials, then restarts.
       g_canvas.setTextDatum(middle_right);
@@ -217,21 +338,21 @@ void app_settings_run() {
     }
 
     if (M5.BtnB.wasReleased() && !longpress_sent) {
-      if (s_cursor == 0) {
+      if (s_cursor == ROW_VOLUME) {
         s_volume = (s_volume + 1) % 11;
         apply_volume();
-      } else if (s_cursor == 1) {
+      } else if (s_cursor == ROW_BRIGHTNESS) {
         s_brightness = (s_brightness + 1);
         if (s_brightness > 10) s_brightness = 1;
         apply_brightness();
-      } else if (s_cursor == 2) {
+      } else if (s_cursor == ROW_ROTATE) {
         s_auto_rotate = !s_auto_rotate;
         if (!s_auto_rotate) M5.Display.setRotation(3);
-      } else if (s_cursor == 3) {
+      } else if (s_cursor == ROW_TIMEOUT) {
         int idx = (timeoutStepIndex() + 1) % N_TIMEOUT_STEPS;
         s_screen_timeout = TIMEOUT_STEPS[idx];
         screen_saver_kick();   // reset idle timer so change takes effect cleanly
-      } else if (s_cursor == 4) {
+      } else if (s_cursor == ROW_WIFI) {
         // WiFi 重新配网 — save current settings first, then hand the screen
         // over to WiFiManager. When it returns (connected or timed out) we
         // redraw our UI and continue.
@@ -242,11 +363,18 @@ void app_settings_run() {
         screen_saver_kick();
         drawUI();
         continue;
-      } else if (s_cursor == 5) {
+      } else if (s_cursor == ROW_REMOTE_OTA) {
         save_settings();
         beep_ok();
         stick_log("info", "settings: remote OTA");
         app_remote_ota_run();
+        screen_saver_kick();
+        drawUI();
+        continue;
+      } else if (s_cursor == ROW_DIAGNOSTICS) {
+        save_settings();
+        beep_ok();
+        runDiagnostics();
         screen_saver_kick();
         drawUI();
         continue;

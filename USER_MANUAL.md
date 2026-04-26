@@ -155,9 +155,10 @@ PC 不装助手，Claude/Codex 小秘书 App 里会显示"无助手"。
 - **自动熄屏** 关/15秒/30秒/60秒/2分/5分
 - **WiFi 配网** 按 B 即刻重进配网热点（换地方/换 WiFi 用）
 - **远程 OTA** 按 B 从远程仓库检查固件更新（需要固件预先配置 manifest URL）
+- **系统诊断** 查看 WiFi、PC 助手缓存、讯飞 API、NTP、OTA 槽和内存状态
 - **清除配网** 按 B 清除 WiFi、天气/B 站、讯飞配置并重启
 
-调完**长按 B** 返回会自动保存到 NVS，断电不丢。
+调完**长按 B** 返回会自动保存到 NVS，断电不丢。系统诊断页里按 A 翻页，短按 B 刷新，长按 B 返回。
 
 ---
 
@@ -185,9 +186,18 @@ PC 不装助手，Claude/Codex 小秘书 App 里会显示"无助手"。
   "version": "1.0.0",
   "url": "https://github.com/OWNER/REPO/releases/latest/download/firmware.bin",
   "sha256": "firmware.bin 的 sha256",
-  "size": 2957445
+  "size": 2957445,
+  "notes": "本次更新说明"
 }
 ```
+
+推荐用脚本生成发布包：
+
+```powershell
+python helper\prepare_release.py --repo OWNER/REPO --notes "本次更新说明"
+```
+
+脚本会编译 `m5stack-sticks3-release` 环境，复制 `firmware.bin`，计算 SHA256，并在 `dist/release/` 写出 `manifest.json`。
 
 ---
 

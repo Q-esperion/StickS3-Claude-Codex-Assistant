@@ -24,7 +24,7 @@ Author: 国产电灯泡
 - 红外遥控：学习和发送红外码
 - 网络电台：在线收音机
 - 本地 OTA 升级：WiFi 无线更新固件
-- 设置：音量、亮度、旋转、熄屏、WiFi 配网、远程 OTA
+- 设置：音量、亮度、旋转、熄屏、WiFi 配网、远程 OTA、系统诊断
 
 ## 使用
 
@@ -46,6 +46,12 @@ APPID / APISecret / APIKey
 
 ```powershell
 python -m platformio run -d .
+```
+
+正式发布版会关闭核心调试日志：
+
+```powershell
+python -m platformio run -d . -e m5stack-sticks3-release
 ```
 
 ## 上传
@@ -71,8 +77,15 @@ python -m platformio run -d . -t upload --upload-port 设备IP
   "version": "1.0.0",
   "url": "https://github.com/OWNER/REPO/releases/latest/download/firmware.bin",
   "sha256": "firmware.bin 的 sha256",
-  "size": 2957445
+  "size": 2957445,
+  "notes": "本次更新说明"
 }
+```
+
+生成发布包：
+
+```powershell
+python helper\prepare_release.py --repo OWNER/REPO --notes "本次更新说明"
 ```
 
 ## PC 助手
@@ -89,7 +102,7 @@ python helper\type_server.py
 StickS3ClaudeCodexHelper.exe
 ```
 
-右下角托盘图标可以打开配置、查看日志、绑定 Claude/Codex 输入目标。
+右下角托盘图标可以打开配置、查看日志、绑定 Claude/Codex 输入目标。配置窗口里也能查看当前绑定状态，并对 Claude/Codex 分别做测试粘贴。
 
 开机自启：
 
@@ -116,7 +129,7 @@ StickS3ClaudeCodexHelper.exe
 
 ## 说明
 
-完整使用说明见 [USER_MANUAL.md](USER_MANUAL.md)。
+完整使用说明见 [USER_MANUAL.md](USER_MANUAL.md)。发布流程见 [docs/developer.md](docs/developer.md)。
 
 ## License
 

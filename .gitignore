@@ -24,10 +24,14 @@ helper/dist/stick_log.txt
 # Python
 *.pyc
 __pycache__/
+.test_tmp/
 src/secrets.h
 
 # Intermediate manual HTML — the .md is source, .pdf is the output
 USER_MANUAL.html
+
+# Generated release bundle
+dist/release/
 
 # Local/vendor reference copies
 StickS3.pdf
