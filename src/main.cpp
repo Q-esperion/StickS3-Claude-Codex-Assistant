@@ -270,6 +270,66 @@ void push_frame() { g_canvas.pushSprite(0, 0); }
 void beep_ok()  { if (!g_radio_owns_i2s) M5.Speaker.tone(1800, 60); }
 void beep_bad() { if (!g_radio_owns_i2s) M5.Speaker.tone(400, 150); }
 
+static void drawBootAnimation() {
+  const int frames = 22;
+  const int line_x = 48;
+  const int line_y = 104;
+  const int line_w = SCR_W - line_x * 2;
+
+  for (int f = 0; f < frames; ++f) {
+    M5.update();
+    g_canvas.fillScreen(CLR_BG);
+
+    int pulse = f % 8;
+    int star_r = 12 + (pulse <= 4 ? pulse : 8 - pulse);
+    draw_claude_mascot(72, 48, star_r, CLR_ACCENT);
+
+    int box_x = 146;
+    int box_y = 33;
+    int box_w = 44;
+    int box_h = 32;
+    g_canvas.fillRoundRect(box_x, box_y, box_w, box_h, 4, CLR_CARD);
+    g_canvas.drawRoundRect(box_x, box_y, box_w, box_h, 4, CLR_ACCENT2);
+    g_canvas.fillCircle(box_x + 7, box_y + 6, 2, CLR_BAD);
+    g_canvas.fillCircle(box_x + 14, box_y + 6, 2, CLR_WARN);
+    g_canvas.fillCircle(box_x + 21, box_y + 6, 2, CLR_GOOD);
+    g_canvas.drawFastHLine(box_x + 4, box_y + 12, box_w - 8, CLR_DIM);
+    g_canvas.setFont(&fonts::Font2);
+    g_canvas.setTextDatum(middle_center);
+    g_canvas.setTextColor(CLR_ACCENT2, CLR_CARD);
+    g_canvas.drawString(">_", box_x + box_w / 2, box_y + 23);
+
+    g_canvas.drawLine(92, 48, 142, 48, CLR_DIM);
+    for (int i = 0; i < 3; ++i) {
+      int dot_x = 94 + ((f * 8 + i * 18) % 46);
+      g_canvas.fillCircle(dot_x, 48, 2, i == 1 ? CLR_ACCENT2 : CLR_ACCENT);
+    }
+
+    g_canvas.setFont(&fonts::efontCN_16);
+    g_canvas.setTextDatum(middle_center);
+    g_canvas.setTextColor(CLR_TEXT, CLR_BG);
+    g_canvas.drawString("小秘书启动中", SCR_W / 2, 82);
+
+    g_canvas.setFont(&fonts::efontCN_12);
+    g_canvas.setTextColor(CLR_DIM, CLR_BG);
+    g_canvas.drawString("StickS3 Claude Codex", SCR_W / 2, 121);
+
+    g_canvas.drawRoundRect(line_x - 1, line_y - 1, line_w + 2, 7, 2, CLR_DIM);
+    int fill = line_w * (f + 1) / frames;
+    g_canvas.fillRoundRect(line_x, line_y, fill, 5, 2, f < frames / 2 ? CLR_ACCENT : CLR_ACCENT2);
+
+    g_canvas.setTextDatum(top_left);
+    push_frame();
+
+    if (f == 0) M5.Speaker.tone(900, 45);
+    if (f == 12) M5.Speaker.tone(1500, 45);
+    delay(45);
+  }
+
+  M5.Speaker.tone(2100, 70);
+  delay(120);
+}
+
 // Claude "sparkle" logo — 4-point star with diagonal accents.
 void draw_claude_mascot(int cx, int cy, int radius, uint32_t color) {
   int r = radius;
@@ -306,21 +366,7 @@ void setup() {
   g_canvas.setPsram(true);
   g_canvas.createSprite(SCR_W, SCR_H);
 
-  // Boot splash via canvas
-  g_canvas.fillScreen(CLR_BG);
-  g_canvas.setTextColor(CLR_ACCENT, CLR_BG);
-  g_canvas.setFont(&fonts::efontCN_24);
-  g_canvas.setTextDatum(middle_center);
-  g_canvas.drawString("Claude / Codex", SCR_W / 2, SCR_H / 2 - 18);
-  g_canvas.setFont(&fonts::efontCN_16);
-  g_canvas.setTextColor(CLR_DIM, CLR_BG);
-  g_canvas.drawString("StickS3 小秘书", SCR_W / 2, SCR_H / 2 + 10);
-  g_canvas.setTextDatum(top_left);
-  push_frame();
-
-  M5.Speaker.tone(1200, 80);
-  delay(300);
-  M5.Speaker.tone(1800, 80);
+  drawBootAnimation();
 
   // Spin up the async stick_log worker before WiFi so the very first log
   // line (the boot message) is already queue-backed and doesn't block.
