@@ -31,7 +31,7 @@ struct RemoteManifest {
 
 static void drawOTAScreen(const char* ip) {
   g_canvas.fillScreen(CLR_BG);
-  draw_title("OTA 升级");
+  draw_title("本地 OTA 升级");
 
   // Big claude mascot in the middle for vibe.
   draw_claude_mascot(SCR_W / 2, 48, 14, CLR_ACCENT);
@@ -79,7 +79,7 @@ void app_ota_run() {
 
   if (WiFi.status() != WL_CONNECTED) {
     g_canvas.fillScreen(CLR_BG);
-    draw_title("OTA 升级");
+    draw_title("本地 OTA 升级");
     g_canvas.setFont(&fonts::efontCN_16);
     g_canvas.setTextColor(CLR_BAD, CLR_BG);
     g_canvas.setTextDatum(middle_center);

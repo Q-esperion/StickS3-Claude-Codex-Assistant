@@ -6,7 +6,7 @@ static const char* const APP_NAMES[] = {
   "仪表盘",
   "红外遥控",
   "网络电台",
-  "OTA 升级",
+  "本地 OTA 升级",
   "设置",
 };
 static const char* const APP_DESC[] = {
@@ -15,7 +15,7 @@ static const char* const APP_DESC[] = {
   "时钟 天气 B站",
   "红外发射工具",
   "在线收音机",
-  "无线烧录固件",
+  "无线刷机",
   "音量 / 亮度",
 };
 static const int N_APPS = sizeof(APP_NAMES) / sizeof(APP_NAMES[0]);

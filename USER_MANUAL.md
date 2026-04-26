@@ -1,6 +1,6 @@
 # StickS3 Claude Codex 小秘书 · 使用说明
 
-基于 M5Stack StickS3 的 Claude / Codex 语音小秘书。屏幕上有 7 个 App：Claude 小秘书、Codex 小秘书、时钟天气仪表盘、红外遥控、网络电台、OTA 无线升级、设置。
+基于 M5Stack StickS3 的 Claude / Codex 语音小秘书。屏幕上有 7 个 App：Claude 小秘书、Codex 小秘书、时钟天气仪表盘、红外遥控、网络电台、本地 OTA 升级、设置。
 
 ---
 
@@ -130,7 +130,7 @@ PC 不装助手，Claude/Codex 小秘书 App 里会显示"无助手"。
 
 **已知不稳的台**：央广中国之声、BBC Radio 1（流源本身就不稳定，死了按 B 换别的台）。
 
-### 6. OTA 升级
+### 6. 本地 OTA 升级
 
 无线烧录新固件用，不用拔 USB 线。
 
@@ -161,7 +161,7 @@ PC 不装助手，Claude/Codex 小秘书 App 里会显示"无助手"。
 
 在 PC 上（需要安装好 Python + PlatformIO）：
 
-1. 板子进 "OTA 升级" App，屏幕记下 IP
+1. 板子进 "本地 OTA 升级" App，屏幕记下 IP
 2. 在项目目录跑：
    ```
    pio run -t upload
