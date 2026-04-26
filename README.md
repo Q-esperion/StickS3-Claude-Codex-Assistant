@@ -4,6 +4,10 @@ Author: 国产电灯泡
 
 一个运行在 M5Stack StickS3 上的 Claude / Codex 语音小秘书，也包含仪表盘、红外遥控、网络电台和 OTA。
 
+<p align="center">
+  <img src="docs/images/m5stack-sticks3.webp" alt="M5Stack StickS3" width="640">
+</p>
+
 ## 功能
 
 - Claude / Codex 小秘书：语音输入到电脑端，并显示实时状态
