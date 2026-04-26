@@ -5,9 +5,12 @@ StickS3 Voice Keyboard Helper (Windows tray app)
 Runs in the Windows system tray. Responsibilities:
 
   1. HTTP server on configurable port (default 8765):
-     - POST /type    — paste text into focused window (Win32 clipboard + Ctrl+V)
-     - POST /status  — receive Claude Code progress from hooks (ring buffer)
-     - GET  /status  — return buffer for StickS3 to poll
+     - POST /type         — paste text into Claude target window
+     - POST /codex/type   — paste text into Codex target window
+     - POST /status       — receive Claude Code progress from hooks
+     - POST /codex/status — receive Codex progress from hooks
+     - GET  /status       — return Claude buffer for StickS3 to poll
+     - GET  /codex/status — return Codex buffer for StickS3 to poll
      - POST /log     — append a line to stick_log.txt (persistent board log)
      - GET  /ping    — liveness probe
 
@@ -45,6 +48,23 @@ from ctypes import wintypes
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
+# Avoid duplicate tray helpers. A second instance cannot bind the ports anyway,
+# and two tray icons make it hard to know which config/log is active.
+_SINGLE_INSTANCE_MUTEX = None
+if os.name == "nt":
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
+    _kernel32.CreateMutexW.restype = wintypes.HANDLE
+    ctypes.set_last_error(0)
+    _SINGLE_INSTANCE_MUTEX = _kernel32.CreateMutexW(
+        None, False, "Local\\StickS3Helper.SingleInstance"
+    )
+    if _SINGLE_INSTANCE_MUTEX and ctypes.get_last_error() == 183:
+        # Do not exit here. A stale helper/dev Python process can hold this
+        # mutex even after the HTTP server is gone. The real single-instance
+        # guard is the port bind in main().
+        print("[warn] StickS3Helper mutex already exists; checking HTTP port.")
+
 # ==========================================================================
 # Config
 # ==========================================================================
@@ -65,9 +85,13 @@ DEFAULT_CONFIG = {
     "udp_port": 8766,
     "discovery_enabled": True,
     "autostart": False,
+    "codex_session_watch_enabled": False,
     # When non-null, /type will focus this window before pasting. Captured
     # via tray menu "绑定当前窗口为输入目标". Shape: {"title": "...", "class": "..."}.
     "target_window": None,
+    "codex_target_window": None,
+    "target_click": None,
+    "codex_target_click": None,
     "corrections": [
         ["克拉克", "Claude"],
         ["克劳德", "Claude"],
@@ -213,11 +237,21 @@ user32.BringWindowToTop.argtypes    = (wintypes.HWND,)
 user32.BringWindowToTop.restype     = wintypes.BOOL
 user32.ShowWindow.argtypes          = (wintypes.HWND, ctypes.c_int)
 user32.ShowWindow.restype           = wintypes.BOOL
+user32.GetWindowRect.argtypes       = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+user32.GetWindowRect.restype        = wintypes.BOOL
+user32.GetCursorPos.argtypes        = (ctypes.POINTER(wintypes.POINT),)
+user32.GetCursorPos.restype         = wintypes.BOOL
+user32.SetCursorPos.argtypes        = (ctypes.c_int, ctypes.c_int)
+user32.SetCursorPos.restype         = wintypes.BOOL
+user32.mouse_event.argtypes         = (wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ULONG_PTR)
+user32.mouse_event.restype          = None
 _ENUM_WNDPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 user32.EnumWindows.argtypes         = (_ENUM_WNDPROC, wintypes.LPARAM)
 user32.EnumWindows.restype          = wintypes.BOOL
 
 SW_RESTORE = 9
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP   = 0x0004
 
 
 def _window_info(hwnd):
@@ -238,19 +272,30 @@ def capture_current_window():
     title, cls = _window_info(hwnd)
     if not cls:
         return None
-    return {"title": title, "class": cls}
+    info = {"title": title, "class": cls}
+    parts = [p.strip() for p in title.split(" - ") if p.strip()]
+    if len(parts) >= 2:
+        # VS Code/Windows Terminal titles often include a volatile document or
+        # command prefix. Keep stable suffix fragments for future matching.
+        info["title_tail"] = " - ".join(parts[-2:])
+        info["project"] = parts[-2]
+    return info
 
 
-def find_target_window():
-    """Find a visible window matching CONFIG['target_window'] criteria.
+def find_target_window(config_key="target_window"):
+    """Find a visible window matching CONFIG[config_key] criteria.
     Returns HWND or None. Match: class exact + title contains saved title
     (so terminal titles that change with cwd still match)."""
-    tgt = CONFIG.get("target_window") or {}
+    tgt = CONFIG.get(config_key) or {}
     if not tgt or not tgt.get("class"):
         return None
     want_cls = tgt["class"]
-    want_title = (tgt.get("title") or "").strip()
-    found = [None]
+    candidates = []
+    for key in ("title", "title_tail", "project"):
+        val = (tgt.get(key) or "").strip()
+        if val and val not in candidates:
+            candidates.append(val)
+    found = []
 
     def cb(hwnd, _lp):
         if not user32.IsWindowVisible(hwnd):
@@ -258,14 +303,26 @@ def find_target_window():
         title, cls = _window_info(hwnd)
         if cls != want_cls:
             return True
-        # Title fragment match (empty substring always matches).
-        if want_title and want_title not in title:
+        if candidates and not any(c in title for c in candidates):
             return True
-        found[0] = hwnd
-        return False  # stop enumeration
+        score = 0
+        if title == (tgt.get("title") or ""):
+            score += 100
+        if (tgt.get("title_tail") or "") and (tgt.get("title_tail") in title):
+            score += 50
+        if (tgt.get("project") or "") and (tgt.get("project") in title):
+            score += 20
+        if hwnd == user32.GetForegroundWindow():
+            score += 5
+        found.append((score, hwnd, title))
+        return True
 
     user32.EnumWindows(_ENUM_WNDPROC(cb), 0)
-    return found[0]
+    if not found:
+        print(f"[bind:{config_key}] target not found class={want_cls!r} candidates={candidates!r}")
+        return None
+    found.sort(key=lambda row: row[0], reverse=True)
+    return found[0][1]
 
 
 def focus_window(hwnd):
@@ -274,10 +331,88 @@ def focus_window(hwnd):
     restrictions on modern Windows."""
     if not hwnd or not user32.IsWindow(hwnd):
         return False
-    user32.ShowWindow(hwnd, SW_RESTORE)     # unminimize if needed
-    user32.SwitchToThisWindow(hwnd, True)   # documented to work w/o focus-steal block
-    user32.BringWindowToTop(hwnd)
-    user32.SetForegroundWindow(hwnd)
+    for _ in range(4):
+        user32.ShowWindow(hwnd, SW_RESTORE)     # unminimize if needed
+        user32.SwitchToThisWindow(hwnd, True)   # documented to work w/o focus-steal block
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+        time.sleep(0.05)
+        if user32.GetForegroundWindow() == hwnd:
+            return True
+    return user32.GetForegroundWindow() == hwnd
+
+
+def _window_rect(hwnd):
+    rect = wintypes.RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return None
+    return rect
+
+
+def capture_click_position(config_key="target_window"):
+    hwnd = find_target_window(config_key)
+    if not hwnd:
+        hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return None
+    rect = _window_rect(hwnd)
+    if not rect:
+        return None
+    pt = wintypes.POINT()
+    if not user32.GetCursorPos(ctypes.byref(pt)):
+        return None
+    w = max(1, int(rect.right - rect.left))
+    h = max(1, int(rect.bottom - rect.top))
+    x = int(pt.x - rect.left)
+    y = int(pt.y - rect.top)
+    return {
+        "x": x,
+        "y": y,
+        "w": w,
+        "h": h,
+        "rx": x / w,
+        "ry": y / h,
+        "right": w - x,
+        "bottom": h - y,
+    }
+
+
+def click_bound_position(hwnd, click_info):
+    if not hwnd or not isinstance(click_info, dict):
+        return False
+    rect = _window_rect(hwnd)
+    if not rect:
+        return False
+    w = max(1, int(rect.right - rect.left))
+    h = max(1, int(rect.bottom - rect.top))
+    old_w = int(click_info.get("w") or 0)
+    old_h = int(click_info.get("h") or 0)
+    local_x = int(click_info.get("x", 0))
+    local_y = int(click_info.get("y", 0))
+    if old_w > 0 and abs(w - old_w) > 8:
+        local_x = int(float(click_info.get("rx", local_x / max(1, old_w))) * w)
+    if old_h > 0 and abs(h - old_h) > 8:
+        # Composer boxes usually sit near the bottom of IDE sidebars. If the
+        # captured point was in the lower half, keep its bottom distance stable
+        # across window resizes; otherwise scale normally.
+        if int(click_info.get("y", 0)) > old_h * 0.55 and "bottom" in click_info:
+            local_y = h - int(click_info.get("bottom", 0))
+        else:
+            local_y = int(float(click_info.get("ry", local_y / max(1, old_h))) * h)
+    local_x = max(1, min(w - 2, local_x))
+    local_y = max(1, min(h - 2, local_y))
+    x = rect.left + local_x
+    y = rect.top + local_y
+    old_pt = wintypes.POINT()
+    have_old_pt = bool(user32.GetCursorPos(ctypes.byref(old_pt)))
+    user32.SetCursorPos(x, y)
+    time.sleep(0.04)
+    user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(0.03)
+    user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    if have_old_pt:
+        time.sleep(0.02)
+        user32.SetCursorPos(int(old_pt.x), int(old_pt.y))
     return True
 
 
@@ -341,14 +476,21 @@ def send_enter():
     _send([_vk_event(VK_RETURN), _vk_event(VK_RETURN, up=True)])
 
 
-def paste_and_enter(text: str, press_enter: bool = True) -> bool:
+def paste_and_enter(text: str, press_enter: bool = True, target_key="target_window") -> bool:
     # If the user has bound a target window (tray menu), bring it to
     # foreground first so the clipboard paste lands there regardless of
     # whatever the user was looking at when voice-input fired.
-    tgt = find_target_window()
+    tgt = find_target_window(target_key)
     if tgt:
-        focus_window(tgt)
+        focused = focus_window(tgt)
         time.sleep(0.12)   # give Windows a beat to actually raise + focus
+        click_key = "codex_target_click" if target_key == "codex_target_window" else "target_click"
+        clicked = click_bound_position(tgt, CONFIG.get(click_key))
+        if not focused:
+            focus_window(tgt)
+        if clicked:
+            time.sleep(0.04)
+        time.sleep(0.08)
     if not set_clipboard_text(text): return False
     time.sleep(0.06)
     send_ctrl_v()
@@ -363,12 +505,15 @@ def paste_and_enter(text: str, press_enter: bool = True) -> bool:
 # ==========================================================================
 _status_lock = threading.Lock()
 # Protects concurrent appends to LOG_FILE. Python's GIL makes short
-# writes atomic-ish but the two /status_event + /log handlers serve from
+# writes atomic-ish but the two /status + /log handlers serve from
 # different worker threads and long multi-line entries can interleave
 # without a lock.
 _log_file_lock = threading.Lock()
 _status_log = deque(maxlen=16)
 _seq = 0
+_codex_status_log = deque(maxlen=16)
+_codex_seq = 0
+_codex_phase = "idle"  # idle | thinking | running
 
 
 def _clean_text(s: str) -> str:
@@ -380,25 +525,75 @@ def _clean_text(s: str) -> str:
         return s.encode("utf-8", errors="ignore").decode("utf-8", errors="ignore")
 
 
-def add_status(text: str) -> None:
-    global _seq
+def _status_state(channel: str):
+    if channel == "codex":
+        return _codex_status_log, "_codex_seq", "codex"
+    return _status_log, "_seq", "claude"
+
+
+def _codex_phase_for_text(text: str) -> str:
+    if text.startswith("\x01U"):
+        return "thinking"
+    if text.startswith("\x01C"):
+        return "idle"
+    return "running"
+
+
+def add_status(text: str, channel: str = "claude") -> int | None:
+    global _seq, _codex_seq, _codex_phase
     text = _clean_text((text or "").strip())
     if not text:
-        return
+        return None
+    log, _, label = _status_state(channel)
     with _status_lock:
-        _seq += 1
-        _status_log.append({"text": text, "ts": time.time(), "seq": _seq})
+        if log:
+            last = log[-1]
+            if last.get("text") == text and time.time() - float(last.get("ts", 0)) < 3.0:
+                return int(last.get("seq", 0))
+        if channel == "codex":
+            _codex_seq += 1
+            seq = _codex_seq
+        else:
+            _seq += 1
+            seq = _seq
+        log.append({"text": text, "ts": time.time(), "seq": seq})
+        if channel == "codex":
+            _codex_phase = _codex_phase_for_text(text)
     try:
         with _log_file_lock, open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [claude] {text}\n")
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [{label}] {text}\n")
     except Exception as e:
         print(f"[warn] status→log write failed: {e}")
+    return seq
 
 
-def get_status_snapshot() -> dict:
-    now = time.time()
+def _latest_status_seq(channel: str) -> int:
+    log, _, _ = _status_state(channel)
     with _status_lock:
-        items = list(_status_log)
+        if not log:
+            return 0
+        return int(log[-1].get("seq", 0))
+
+
+def schedule_codex_idle(send_seq: int | None) -> None:
+    if not send_seq:
+        return
+
+    def _mark_idle_if_unchanged():
+        if _latest_status_seq("codex") == send_seq:
+            add_status("\x01C（超时空闲）", "codex")
+
+    timer = threading.Timer(90.0, _mark_idle_if_unchanged)
+    timer.daemon = True
+    timer.start()
+
+
+def get_status_snapshot(channel: str = "claude") -> dict:
+    now = time.time()
+    log, _, _ = _status_state(channel)
+    with _status_lock:
+        items = list(log)
+        phase = _codex_phase if channel == "codex" else "idle"
     latest = items[-1] if items else None
     return {
         "latest":     (latest.get("text", "") if latest else ""),
@@ -406,8 +601,125 @@ def get_status_snapshot() -> dict:
         "age_sec":    (int(now - latest.get("ts", now)) if latest else -1),
         "history":    [{"text": it.get("text", ""), "seq": it.get("seq", 0)}
                        for it in items[-8:]],
+        "state":      phase,
         "now":        int(now),
     }
+
+
+# ==========================================================================
+# Codex session watcher
+# ==========================================================================
+CODEX_SESSIONS_DIR = os.path.join(os.path.expanduser("~"), ".codex", "sessions")
+
+
+def _shorten(text: str, limit: int = 30) -> str:
+    text = (text or "").replace("\n", " ").strip()
+    return text[:limit] if len(text) > limit else text
+
+
+def _latest_codex_session_file() -> str | None:
+    newest = None
+    newest_mtime = 0.0
+    if not os.path.isdir(CODEX_SESSIONS_DIR):
+        return None
+    try:
+        for root, _dirs, files in os.walk(CODEX_SESSIONS_DIR):
+            for name in files:
+                if not name.endswith(".jsonl"):
+                    continue
+                path = os.path.join(root, name)
+                try:
+                    mtime = os.path.getmtime(path)
+                except OSError:
+                    continue
+                if mtime > newest_mtime:
+                    newest = path
+                    newest_mtime = mtime
+    except Exception:
+        return None
+    return newest
+
+
+def _codex_tool_label(payload: dict) -> str:
+    name = payload.get("name") or "tool"
+    detail = ""
+    raw_args = payload.get("arguments") or ""
+    try:
+        args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+        if isinstance(args, dict):
+            if name == "shell_command":
+                detail = (args.get("command") or "").splitlines()[0]
+            elif name in ("read_mcp_resource", "view_image"):
+                detail = args.get("uri") or args.get("path") or ""
+            elif name == "apply_patch":
+                detail = "patch"
+    except Exception:
+        detail = ""
+    detail = _shorten(detail, 18)
+    return f"运行 {name} {detail}".strip()
+
+
+def _codex_event_label(obj: dict) -> str:
+    typ = obj.get("type")
+    payload = obj.get("payload") or {}
+    if not isinstance(payload, dict):
+        return ""
+
+    ptyp = payload.get("type")
+    if typ == "event_msg" and ptyp == "user_message":
+        return "\x01U" + _shorten(payload.get("message") or "")
+
+    if typ == "response_item" and ptyp == "function_call":
+        return _codex_tool_label(payload)
+
+    if typ == "event_msg" and ptyp == "agent_message":
+        phase = payload.get("phase") or ""
+        msg = _shorten(payload.get("message") or "")
+        if phase == "final_answer":
+            return "\x01C" + (msg or "（完成）")
+        if phase == "commentary":
+            return "回复中"
+
+    return ""
+
+
+def codex_session_watch_loop():
+    path = None
+    pos = 0
+    next_scan = 0.0
+    while True:
+        now = time.time()
+        if now >= next_scan:
+            next_scan = now + 1.5
+            latest = _latest_codex_session_file()
+            if latest and latest != path:
+                path = latest
+                try:
+                    pos = os.path.getsize(path)
+                except OSError:
+                    pos = 0
+                print(f"[codex-watch] watching {path}")
+
+        if path:
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    f.seek(pos)
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except Exception:
+                            continue
+                        label = _codex_event_label(obj)
+                        if label:
+                            add_status(label, "codex")
+                    pos = f.tell()
+            except OSError:
+                path = None
+                pos = 0
+        time.sleep(0.25)
 
 
 # ==========================================================================
@@ -438,6 +750,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "service": "sticks3-typebuddy"})
         elif self.path == "/status":
             self._send_json(200, get_status_snapshot())
+        elif self.path == "/codex/status":
+            self._send_json(200, get_status_snapshot("codex"))
         else:
             self._send_json(404, {"error": "unknown path"})
 
@@ -461,6 +775,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True})
             return
 
+        if self.path == "/codex/status":
+            add_status(data.get("text", ""), "codex")
+            self._send_json(200, {"ok": True})
+            return
+
         if self.path == "/log":
             line = (data.get("text") or "").strip()
             level = (data.get("level") or "info").strip()
@@ -475,7 +794,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True})
             return
 
-        if self.path != "/type":
+        if self.path not in ("/type", "/codex/type"):
             self._send_json(404, {"error": "unknown path"})
             return
 
@@ -485,19 +804,29 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "no text"})
             return
 
+        is_codex = self.path == "/codex/type"
         fixed = fix_text(text)
         try:
-            ok = paste_and_enter(fixed, press_enter)
+            ok = paste_and_enter(
+                fixed, press_enter,
+                "codex_target_window" if is_codex else "target_window"
+            )
         except Exception as e:
             print(f"[error] paste failed: {e}")
             self._send_json(500, {"error": str(e)})
             return
 
         if ok:
+            channel = "codex" if is_codex else "claude"
+            seq = add_status("\x01U" + fixed, channel)
+            if is_codex:
+                # Codex notify marks completion; this is only a stale-state
+                # fallback for cases where notify is not configured or missed.
+                schedule_codex_idle(seq)
             if fixed != text:
-                print(f"[typed] {fixed}   (was: {text})")
+                print(f"[typed:{'codex' if is_codex else 'claude'}] {fixed}   (was: {text})")
             else:
-                print(f"[typed] {fixed}")
+                print(f"[typed:{'codex' if is_codex else 'claude'}] {fixed}")
         else:
             print(f"[warn] paste_and_enter returned False for: {fixed}")
 
@@ -661,8 +990,12 @@ def open_config_dialog():
             "udp_port": udp_port,
             "discovery_enabled": discovery_var.get(),
             "autostart": autostart_var.get(),
+            "codex_session_watch_enabled": CONFIG.get("codex_session_watch_enabled", False),
             # Preserve the bound target window across config-dialog saves.
             "target_window": CONFIG.get("target_window"),
+            "codex_target_window": CONFIG.get("codex_target_window"),
+            "target_click": CONFIG.get("target_click"),
+            "codex_target_click": CONFIG.get("codex_target_click"),
             "corrections": corr,
         }
         save_config(new_cfg)
@@ -689,14 +1022,42 @@ def open_log_folder(icon=None, item=None):
         print(f"[warn] open log folder: {e}")
 
 
-def on_bind_target(icon=None, item=None):
+def _tray_base_title():
+    return f"StickS3 Helper - {local_ip()}:{CONFIG['http_port']}"
+
+
+def show_tray_feedback(icon, title, message, restore_after=3.0):
+    print(f"[tray] {title}: {message}")
+    if not icon:
+        return
+    try:
+        icon.title = f"{title}: {message}"
+    except Exception:
+        pass
+    try:
+        icon.notify(message, title)
+    except Exception as e:
+        print(f"[warn] tray notify failed: {e}")
+
+    def restore():
+        try:
+            icon.title = _tray_base_title()
+        except Exception:
+            pass
+
+    timer = threading.Timer(restore_after, restore)
+    timer.daemon = True
+    timer.start()
+
+
+def on_bind_target(icon=None, item=None, config_key="target_window", label="Claude"):
     """User wants to lock voice input to a specific window. Give them 3
-    seconds to focus their target (e.g. the terminal running Claude Code),
+    seconds to focus their target (e.g. the terminal running Claude/Codex),
     then capture that window's title + class."""
     def do():
         # Countdown via tooltip so user can see what's happening.
         for n in (3, 2, 1):
-            try: icon.title = f"绑定窗口中… {n}"
+            try: icon.title = f"绑定{label}窗口中… {n}"
             except Exception: pass
             time.sleep(1)
         info = capture_current_window()
@@ -704,17 +1065,77 @@ def on_bind_target(icon=None, item=None):
         except Exception: pass
         if not info:
             print("[bind] no foreground window captured")
+            show_tray_feedback(
+                icon,
+                f"{label} \u7ed1\u5b9a\u5931\u8d25",
+                "\u6ca1\u6709\u6293\u5230\u524d\u53f0\u7a97\u53e3",
+            )
             return
-        CONFIG["target_window"] = info
+        CONFIG[config_key] = info
         save_config(CONFIG)
-        print(f"[bind] locked to: {info['class']!r} / title~{info['title']!r}")
+        print(f"[bind:{label}] locked to: {info['class']!r} / title~{info['title']!r}")
+        title = (info.get("title") or "").strip() or "\u65e0\u6807\u9898"
+        if len(title) > 36:
+            title = title[:36] + "..."
+        show_tray_feedback(
+            icon,
+            f"{label} \u7ed1\u5b9a\u6210\u529f",
+            f"\u8f93\u5165\u76ee\u6807: {title}",
+        )
     threading.Thread(target=do, daemon=True).start()
 
 
-def on_clear_target(icon=None, item=None):
-    CONFIG["target_window"] = None
+def on_clear_target(icon=None, item=None, config_key="target_window", label="Claude"):
+    CONFIG[config_key] = None
     save_config(CONFIG)
-    print("[bind] target window cleared")
+    print(f"[bind:{label}] target window cleared")
+    show_tray_feedback(
+        icon,
+        f"{label} \u5df2\u6e05\u9664",
+        "\u8f93\u5165\u76ee\u6807\u5df2\u6e05\u9664",
+    )
+
+
+def on_bind_click(icon=None, item=None, config_key="target_window", click_key="target_click", label="Claude"):
+    """Capture mouse position relative to the bound window. For Electron apps
+    like VS Code this is more reliable than window focus alone because the
+    text box is inside the app, not a separate Win32 control."""
+    def do():
+        for n in (3, 2, 1):
+            try: icon.title = f"绑定{label}输入框… {n}"
+            except Exception: pass
+            time.sleep(1)
+        pos = capture_click_position(config_key)
+        try: icon.title = f"StickS3 助手 — {local_ip()}:{CONFIG['http_port']}"
+        except Exception: pass
+        if not pos:
+            print(f"[bind:{label}] input click position capture failed")
+            show_tray_feedback(
+                icon,
+                f"{label} \u70b9\u4f4d\u5931\u8d25",
+                "\u6ca1\u6709\u6293\u5230\u8f93\u5165\u6846\u4f4d\u7f6e",
+            )
+            return
+        CONFIG[click_key] = pos
+        save_config(CONFIG)
+        print(f"[bind:{label}] input click position: x={pos['x']} y={pos['y']}")
+        show_tray_feedback(
+            icon,
+            f"{label} \u70b9\u4f4d\u6210\u529f",
+            f"\u8f93\u5165\u6846: x={pos['x']} y={pos['y']}",
+        )
+    threading.Thread(target=do, daemon=True).start()
+
+
+def on_clear_click(icon=None, item=None, click_key="target_click", label="Claude"):
+    CONFIG[click_key] = None
+    save_config(CONFIG)
+    print(f"[bind:{label}] input click position cleared")
+    show_tray_feedback(
+        icon,
+        f"{label} \u5df2\u6e05\u9664",
+        "\u8f93\u5165\u6846\u4f4d\u7f6e\u5df2\u6e05\u9664",
+    )
 
 
 def on_quit(icon, item=None):
@@ -764,21 +1185,37 @@ def start_tray():
     ip = local_ip()
     title = f"StickS3 助手 — {ip}:{CONFIG['http_port']}"
 
-    def target_status(_=None):
-        tgt = CONFIG.get("target_window")
+    def target_status(config_key="target_window", label="Claude"):
+        tgt = CONFIG.get(config_key)
         if not tgt:
-            return "目标窗口: 跟随焦点（未绑定）"
+            return f"{label}: 跟随焦点（未绑定）"
         t = (tgt.get("title") or "").strip() or "(无标题)"
         if len(t) > 28: t = t[:28] + "…"
-        return f"目标: {t}"
+        click_key = "codex_target_click" if config_key == "codex_target_window" else "target_click"
+        suffix = " +点位" if CONFIG.get(click_key) else ""
+        return f"{label}: {t}{suffix}"
 
     menu = pystray.Menu(
         pystray.MenuItem(f"IP: {ip}:{CONFIG['http_port']}", None, enabled=False),
-        pystray.MenuItem(target_status, None, enabled=False),
+        pystray.MenuItem(lambda _: target_status("target_window", "Claude"), None, enabled=False),
+        pystray.MenuItem(lambda _: target_status("codex_target_window", "Codex"), None, enabled=False),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("绑定当前窗口为输入目标 (3 秒后抓取)",
-                         lambda icon, item: on_bind_target(icon, item)),
-        pystray.MenuItem("清除绑定（恢复跟随焦点）", on_clear_target),
+        pystray.MenuItem("绑定 Claude 输入目标 (3 秒后抓取)",
+                         lambda icon, item: on_bind_target(icon, item, "target_window", "Claude")),
+        pystray.MenuItem("绑定 Codex 输入目标 (3 秒后抓取)",
+                         lambda icon, item: on_bind_target(icon, item, "codex_target_window", "Codex")),
+        pystray.MenuItem("绑定 Claude 输入框位置 (3 秒后抓鼠标)",
+                         lambda icon, item: on_bind_click(icon, item, "target_window", "target_click", "Claude")),
+        pystray.MenuItem("绑定 Codex 输入框位置 (3 秒后抓鼠标)",
+                         lambda icon, item: on_bind_click(icon, item, "codex_target_window", "codex_target_click", "Codex")),
+        pystray.MenuItem("清除 Claude 绑定",
+                         lambda icon, item: on_clear_target(icon, item, "target_window", "Claude")),
+        pystray.MenuItem("清除 Codex 绑定",
+                         lambda icon, item: on_clear_target(icon, item, "codex_target_window", "Codex")),
+        pystray.MenuItem("清除 Claude 输入框位置",
+                         lambda icon, item: on_clear_click(icon, item, "target_click", "Claude")),
+        pystray.MenuItem("清除 Codex 输入框位置",
+                         lambda icon, item: on_clear_click(icon, item, "codex_target_click", "Codex")),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("打开配置", lambda icon, item: threading.Thread(
             target=open_config_dialog, daemon=True).start()),
@@ -813,6 +1250,11 @@ def main():
 
     # UDP discovery thread
     threading.Thread(target=discovery_loop, daemon=True).start()
+
+    # Fallback for old Codex builds without official hooks. Disabled by
+    # default because official hooks provide cleaner event boundaries.
+    if CONFIG.get("codex_session_watch_enabled", False):
+        threading.Thread(target=codex_session_watch_loop, daemon=True).start()
 
     # Tray icon runs on main thread (required by pystray)
     try:

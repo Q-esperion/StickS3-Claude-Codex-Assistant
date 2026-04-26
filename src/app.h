@@ -27,7 +27,9 @@ void app_ir_run();
 void app_radio_run();
 void app_settings_run();
 void app_voicekb_run();
+void app_codex_run();
 void app_ota_run();
+void app_remote_ota_run();
 
 // Draw the Claude "sparkle" mascot centered at (cx,cy) with given radius & color.
 void draw_claude_mascot(int cx, int cy, int radius, uint32_t color);
@@ -42,7 +44,7 @@ void apply_volume();
 void apply_brightness();
 
 // Screen saver — call tick() in app loops; kick() on manual wake (e.g., boot/app enter).
-void screen_saver_tick();
+bool screen_saver_tick();
 void screen_saver_kick();
 
 // Call periodically from app loops that want the screen to follow device orientation.
@@ -56,6 +58,7 @@ void stick_log(const char* level, const String& msg);
 
 // WiFi
 void wifi_setup(bool force_portal);
+void wifi_clear_saved_config();
 bool wifi_is_connected();
 const char* wifi_ssid();
 
@@ -67,8 +70,6 @@ void push_frame();   // shortcut for g_canvas.pushSprite(0,0)
 void beep_ok();
 void beep_bad();
 
-// Once the radio app has been entered once, the Audio library takes
-// permanent ownership of I2S0 for the rest of this boot. All subsequent
-// M5.Speaker calls (beep_ok, tones, etc.) silently no-op. Reboot to
-// restore button beeps. This tradeoff eliminates the I2S handoff bugs.
+// True while the radio app owns I2S0 through ESP32-audioI2S. Shared speaker
+// helpers gate themselves on this flag so M5.Speaker does not fight Audio.
 extern bool g_radio_owns_i2s;

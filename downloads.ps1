@@ -1,4 +1,4 @@
-$dl = "G:\M5Stack StickS3\downloads"
+$dl = Join-Path $PSScriptRoot "downloads"
 New-Item -ItemType Directory -Force -Path $dl | Out-Null
 Set-Location $dl
 

@@ -78,9 +78,16 @@ cmd = [
     url,
 ]
 print("running:", " ".join(f'"{c}"' if " " in c else c for c in cmd))
-r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+r = subprocess.run(
+    cmd,
+    capture_output=True,
+    text=True,
+    encoding="utf-8",
+    errors="replace",
+    timeout=60,
+)
 if r.returncode != 0:
-    print("chrome stderr:", r.stderr[-500:])
+    print("chrome stderr:", (r.stderr or "")[-500:])
     sys.exit(r.returncode)
 print(f"wrote PDF:  {PDF}")
 print(f"size:       {os.path.getsize(PDF):,} bytes")

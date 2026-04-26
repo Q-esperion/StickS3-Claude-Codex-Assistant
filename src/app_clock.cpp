@@ -9,10 +9,10 @@
 static const char* NTP1 = "ntp.aliyun.com";
 static const char* NTP2 = "ntp.ntsc.ac.cn";
 
-// Loaded from NVS namespace "site" (set via WiFiManager portal). Defaults
-// match the original hardcoded values so factory units still work.
-static String s_city_code = "101210101";
-static String s_bili_uid  = "8466490";
+// Loaded from NVS namespace "site" (set via WiFiManager portal).
+// Empty defaults keep personal location / account IDs out of open-source builds.
+static String s_city_code = "";
+static String s_bili_uid  = "";
 static String s_city_name = "";   // filled from weather API response
 
 struct Weather {
@@ -41,6 +41,7 @@ static void loadSiteConfig() {
 
 static bool fetchWeather() {
   if (WiFi.status() != WL_CONNECTED) return false;
+  if (s_city_code.length() == 0) return false;
   HTTPClient http;
   http.setTimeout(6000);
   String url = String("http://t.weather.itboy.net/api/weather/city/") + s_city_code;
@@ -138,7 +139,7 @@ static void drawClockView() {
     g_canvas.drawString(wbuf, 6, 120);
   } else {
     g_canvas.setTextColor(CLR_DIM, CLR_BG);
-    g_canvas.drawString("天气加载...", 6, 120);
+    g_canvas.drawString(s_city_code.length() ? "天气加载..." : "天气未配置", 6, 120);
   }
 
   g_canvas.setTextDatum(middle_right);
@@ -171,7 +172,7 @@ void app_clock_run() {
 
   while (true) {
     M5.update();
-    screen_saver_tick();
+    if (screen_saver_tick()) { delay(30); continue; }
     maybe_auto_rotate();
     if (M5.BtnB.pressedFor(LONG_PRESS_MS)) {
       if (!longpress_sent) { beep_ok(); longpress_sent = true; }

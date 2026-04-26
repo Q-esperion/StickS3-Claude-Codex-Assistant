@@ -1,4 +1,5 @@
 #include "app.h"
+#include "xfyun_config.h"
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <HTTPClient.h>
@@ -10,16 +11,11 @@
 #include "esp_heap_caps.h"
 #include <time.h>
 
-// iFlytek credentials (stored in memory file xfyun_credentials.md)
-static const char* XF_APPID      = "6a833154";
-static const char* XF_API_KEY    = "49dac253f727f50582590821a8610e29";
-static const char* XF_API_SECRET = "ZmZlNDFmZTliMDcyMzQ2ZWE1MjdiYTM3";
 static const char* XF_HOST       = "iat-api.xfyun.cn";
 
 // PC helper — IP / port are discovered at runtime via UDP broadcast and
-// persisted in NVS. The defaults below are only used before the very first
-// successful discovery (or as a fallback if the saved address still works).
-static String s_pc_ip   = "192.168.31.124";
+// persisted in NVS.
+static String s_pc_ip   = "";
 static int    s_pc_port = 8765;
 static const int DISCOVERY_UDP_PORT = 8766;
 
@@ -70,6 +66,17 @@ static const uint32_t REVEAL_INTERVAL_MS = 500;
 // Independent UI refresh tick so battery / charging icon update quickly
 // even when no Claude status changes.
 static uint32_t s_last_ui_refresh_t = 0;
+
+static String wsPayloadPreview(const uint8_t* payload, size_t length) {
+  String out;
+  size_t n = length > 80 ? 80 : length;
+  out.reserve(n);
+  for (size_t i = 0; i < n; i++) {
+    char c = (char)payload[i];
+    out += (c >= 32 && c <= 126) ? c : '.';
+  }
+  return out.length() ? out : String("unknown");
+}
 
 // ========= HMAC + Base64 helpers =========
 static String hmac_sha256_b64(const String& data, const String& key) {
@@ -203,6 +210,7 @@ static bool discoverHelper() {
 // ========= PC helper =========
 static bool pingPC() {
   if (WiFi.status() != WL_CONNECTED) return false;
+  if (s_pc_ip.length() == 0) return false;
   HTTPClient http;
   http.setTimeout(1500);
   String url = String("http://") + s_pc_ip + ":" + s_pc_port + "/ping";
@@ -217,6 +225,7 @@ static bool pingPC() {
 // catch every event even if the same text repeats back-to-back.
 static void pollClaudeStatus() {
   if (WiFi.status() != WL_CONNECTED) return;
+  if (s_pc_ip.length() == 0) return;
   HTTPClient http;
   http.setTimeout(1500);
   String url = String("http://") + s_pc_ip + ":" + s_pc_port + "/status";
@@ -309,6 +318,7 @@ static bool revealPending() {
 
 static bool sendToPC(const String& text) {
   if (WiFi.status() != WL_CONNECTED) return false;
+  if (s_pc_ip.length() == 0) return false;
   HTTPClient http;
   http.setTimeout(3000);
   String url = String("http://") + s_pc_ip + ":" + s_pc_port + "/type";
@@ -329,6 +339,16 @@ static bool sendToPC(const String& text) {
 // ========= iFlytek STT streaming =========
 static void wsEvent(WStype_t type, uint8_t* payload, size_t length) {
   switch (type) {
+    case WStype_ERROR: {
+      String detail = wsPayloadPreview(payload, length);
+      s_stt_error = true; s_stt_done = true;
+      s_stt_error_detail = String("WS 错误: ") + detail;
+      stick_log("warn", String("stt ws error: ") + detail);
+      break;
+    }
+    case WStype_CONNECTED:
+      stick_log("info", "stt ws connected");
+      break;
     case WStype_TEXT: {
       JsonDocument doc;
       if (deserializeJson(doc, payload, length)) {
@@ -358,9 +378,17 @@ static void wsEvent(WStype_t type, uint8_t* payload, size_t length) {
       if (status == 2) s_stt_done = true;
       break;
     }
-    case WStype_DISCONNECTED:
-      if (!s_stt_done) { s_stt_error = true; s_stt_done = true; }
+    case WStype_DISCONNECTED: {
+      if (!s_stt_done) {
+        String detail = wsPayloadPreview(payload, length);
+        s_stt_error = true; s_stt_done = true;
+        s_stt_error_detail = detail.indexOf("HTTP 401") >= 0
+                            ? String("讯飞鉴权失败 401")
+                            : String("WS 断开: ") + detail;
+        stick_log("warn", String("stt ws disconnected: ") + detail);
+      }
       break;
+    }
     default: break;
   }
 }
@@ -374,13 +402,19 @@ static String doSTT() {
   time_t now_t = time(nullptr);
   if (now_t < 1700000000) { s_stt_error_detail = "时间未同步"; return ""; }
 
+  String xf_appid, xf_api_key, xf_api_secret;
+  if (!xfyun_load_credentials(xf_appid, xf_api_key, xf_api_secret)) {
+    s_stt_error_detail = "请先配讯飞 API";
+    return "";
+  }
+
   String date = http_date();
   String sig_origin = String("host: ") + XF_HOST + "\n"
                     + "date: " + date + "\n"
                     + "GET /v2/iat HTTP/1.1";
-  String sig_b64 = hmac_sha256_b64(sig_origin, String(XF_API_SECRET));
+  String sig_b64 = hmac_sha256_b64(sig_origin, xf_api_secret);
 
-  String auth_origin = String("api_key=\"") + XF_API_KEY +
+  String auth_origin = String("api_key=\"") + xf_api_key +
                        "\", algorithm=\"hmac-sha256\", "
                        "headers=\"host date request-line\", "
                        "signature=\"" + sig_b64 + "\"";
@@ -390,9 +424,14 @@ static String doSTT() {
               + "&date=" + url_encode(date)
               + "&host=" + XF_HOST;
 
+  stick_log("info", String("stt ws begin date=") + date
+                    + " path_len=" + path.length()
+                    + " rssi=" + WiFi.RSSI()
+                    + " heap=" + (ESP.getFreeHeap() / 1024) + "K");
+  s_ws.disconnect();
   s_ws.onEvent(wsEvent);
   s_ws.setReconnectInterval(0);
-  s_ws.beginSSL(XF_HOST, 443, path.c_str());
+  s_ws.beginSSL(XF_HOST, 443, path.c_str(), "", "");
 
   uint32_t t0 = millis();
   while (millis() - t0 < 6000) {
@@ -402,7 +441,10 @@ static String doSTT() {
   }
   if (!s_ws.isConnected()) {
     s_ws.disconnect();
-    s_stt_error_detail = "WS 连接失败";
+    if (!s_stt_error_detail.length()) s_stt_error_detail = "WS 连接失败";
+    stick_log("warn", String("stt ws connect failed: ") + s_stt_error_detail
+                      + " wifi=" + (int)WiFi.status()
+                      + " rssi=" + WiFi.RSSI());
     return "";
   }
 
@@ -421,7 +463,7 @@ static String doSTT() {
 
     String msg;
     if (first) {
-      msg  = String("{\"common\":{\"app_id\":\"") + XF_APPID + "\"},"
+      msg  = String("{\"common\":{\"app_id\":\"") + xf_appid + "\"},"
            + "\"business\":{\"language\":\"zh_cn\",\"domain\":\"iat\","
              "\"accent\":\"mandarin\",\"vad_eos\":5000},"
            + "\"data\":{\"status\":0,\"format\":\"audio/L16;rate=16000\","
@@ -742,7 +784,7 @@ void app_voicekb_run() {
 
   while (true) {
     M5.update();
-    screen_saver_tick();
+    if (screen_saver_tick()) { delay(5); continue; }
 
     if (M5.BtnB.pressedFor(LONG_PRESS_MS)) {
       if (!longpress_sent) longpress_sent = true;

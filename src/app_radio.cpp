@@ -8,8 +8,8 @@
 // 网络电台 — 简化版重写
 //
 // 设计原则（对应社区 M5Stack web radio 的成熟做法）：
-//   1. 首次进入时一次性把 I2S 从 M5.Speaker 交给 ESP32-audioI2S，此后永不归还。
-//      M5.Speaker 从此静默，按键 beep 由 g_radio_owns_i2s 这个全局 flag gate 掉。
+//   1. 进入电台时把 I2S 从 M5.Speaker 交给 ESP32-audioI2S，退出时再交回。
+//      电台播放期间按键 beep 由 g_radio_owns_i2s 这个全局 flag gate 掉。
 //   2. Audio 实例是一个堆上的单例，第一次进 radio app 时创建，**从不 delete**
 //      （库的析构函数在长 TCP 会话后会阻塞 client.stop() 超过 task WDT → panic）。
 //   3. 切台 = stopSong() + 短 delay + connecttohost()。没有 fade、没有 debounce、
@@ -286,7 +286,7 @@ void app_radio_run() {
 
   while (true) {
     M5.update();
-    screen_saver_tick();
+    if (screen_saver_tick()) { delay(20); continue; }
     maybe_auto_rotate();
 
     // Long-press B → exit

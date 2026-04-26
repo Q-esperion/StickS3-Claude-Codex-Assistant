@@ -1,6 +1,12 @@
 #include "app.h"
+#include "remote_ota_config.h"
 #include <WiFi.h>
 #include <ArduinoOTA.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
+#include <Update.h>
+#include <mbedtls/sha256.h>
 
 // Dedicated OTA upgrade mode. Before beginning OTA we shut down every heavy
 // consumer (audio, mic, speaker) so the upload doesn't collide with other
@@ -15,6 +21,13 @@ static volatile int  s_ota_err      = 0;
 // callback instead — that's the only code path running mid-transfer. IP is
 // stashed at file scope so the callback has access.
 static String s_ota_ip;
+
+struct RemoteManifest {
+  String version;
+  String url;
+  String sha256;
+  uint32_t size = 0;
+};
 
 static void drawOTAScreen(const char* ip) {
   g_canvas.fillScreen(CLR_BG);
@@ -158,5 +171,302 @@ void app_ota_run() {
       }
     }
     delay(5);
+  }
+}
+
+static void drawRemoteOTAScreen(const char* title, const char* detail, int progress) {
+  g_canvas.fillScreen(CLR_BG);
+  draw_title("远程 OTA");
+
+  draw_claude_mascot(SCR_W / 2, 42, 12, CLR_ACCENT2);
+
+  g_canvas.setTextDatum(middle_center);
+  g_canvas.setFont(&fonts::efontCN_16);
+  g_canvas.setTextColor(progress < -1 ? CLR_BAD : CLR_TEXT, CLR_BG);
+  g_canvas.drawString(title, SCR_W / 2, 70);
+
+  g_canvas.setFont(&fonts::efontCN_12);
+  g_canvas.setTextColor(CLR_DIM, CLR_BG);
+  if (detail && *detail) g_canvas.drawString(detail, SCR_W / 2, 88);
+
+  if (progress >= 0) {
+    int pbx = 20, pby = 104, pbw = SCR_W - 40, pbh = 8;
+    g_canvas.drawRoundRect(pbx - 1, pby - 1, pbw + 2, pbh + 2, 2, CLR_DIM);
+    int fill = pbw * progress / 100;
+    g_canvas.fillRoundRect(pbx, pby, fill, pbh, 2, CLR_ACCENT2);
+  } else {
+    g_canvas.drawString("短按 B 开始  长按 B 退出", SCR_W / 2, SCR_H - 12);
+  }
+
+  g_canvas.setTextDatum(top_left);
+  push_frame();
+}
+
+static String sha256Hex(const uint8_t hash[32]) {
+  static const char* hex = "0123456789abcdef";
+  char out[65];
+  for (int i = 0; i < 32; i++) {
+    out[i * 2] = hex[(hash[i] >> 4) & 0x0F];
+    out[i * 2 + 1] = hex[hash[i] & 0x0F];
+  }
+  out[64] = 0;
+  return String(out);
+}
+
+static bool fetchRemoteManifest(RemoteManifest& m, String& err) {
+  String manifest_url = REMOTE_OTA_MANIFEST_URL;
+  if (manifest_url.length() == 0) {
+    err = "未配置 manifest";
+    return false;
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setTimeout(8000);
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  if (!http.begin(client, manifest_url)) {
+    err = "manifest 打开失败";
+    return false;
+  }
+
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    err = String("manifest HTTP ") + code;
+    http.end();
+    return false;
+  }
+
+  String body = http.getString();
+  http.end();
+
+  JsonDocument doc;
+  DeserializationError json_err = deserializeJson(doc, body);
+  if (json_err) {
+    err = String("manifest JSON ") + json_err.c_str();
+    return false;
+  }
+
+  m.version = String((const char*)(doc["version"] | ""));
+  m.url     = String((const char*)(doc["url"] | ""));
+  m.sha256  = String((const char*)(doc["sha256"] | ""));
+  m.size    = doc["size"] | 0;
+  m.sha256.toLowerCase();
+
+  if (m.url.length() == 0) {
+    err = "manifest 缺 url";
+    return false;
+  }
+  if (m.size == 0) {
+    err = "manifest 缺 size";
+    return false;
+  }
+  if (m.sha256.length() > 0 && m.sha256.length() != 64) {
+    err = "sha256 长度错误";
+    return false;
+  }
+  return true;
+}
+
+static bool downloadAndApplyRemoteOTA(const RemoteManifest& m, String& err) {
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setTimeout(12000);
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  if (!http.begin(client, m.url)) {
+    err = "固件打开失败";
+    return false;
+  }
+
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    err = String("固件 HTTP ") + code;
+    http.end();
+    return false;
+  }
+
+  int content_len = http.getSize();
+  if (content_len > 0 && (uint32_t)content_len != m.size) {
+    err = "固件大小不匹配";
+    http.end();
+    return false;
+  }
+
+  if (!Update.begin(m.size)) {
+    err = String("OTA 开始失败 ") + Update.getError();
+    http.end();
+    return false;
+  }
+
+  mbedtls_sha256_context sha_ctx;
+  mbedtls_sha256_init(&sha_ctx);
+  mbedtls_sha256_starts_ret(&sha_ctx, 0);
+
+  WiFiClient* stream = http.getStreamPtr();
+  uint8_t buf[2048];
+  uint32_t written = 0;
+  int last_progress = -1;
+  uint32_t last_data_ms = millis();
+
+  while (written < m.size) {
+    screen_saver_kick();
+    int avail = stream->available();
+    if (avail <= 0) {
+      if (!http.connected() && written >= m.size) break;
+      if (millis() - last_data_ms > 15000) {
+        err = "下载超时";
+        Update.abort();
+        http.end();
+        mbedtls_sha256_free(&sha_ctx);
+        return false;
+      }
+      delay(10);
+      continue;
+    }
+
+    size_t want = (size_t)avail;
+    if (want > sizeof(buf)) want = sizeof(buf);
+    if (want > m.size - written) want = m.size - written;
+
+    int n = stream->readBytes(buf, want);
+    if (n <= 0) continue;
+    last_data_ms = millis();
+
+    size_t w = Update.write(buf, n);
+    if (w != (size_t)n) {
+      err = String("写入失败 ") + Update.getError();
+      Update.abort();
+      http.end();
+      mbedtls_sha256_free(&sha_ctx);
+      return false;
+    }
+
+    mbedtls_sha256_update_ret(&sha_ctx, buf, n);
+    written += n;
+
+    int progress = (int)((uint64_t)written * 100 / m.size);
+    if (progress != last_progress) {
+      last_progress = progress;
+      char detail[40];
+      snprintf(detail, sizeof(detail), "%lu / %lu KB",
+               (unsigned long)(written / 1024),
+               (unsigned long)(m.size / 1024));
+      drawRemoteOTAScreen("下载固件", detail, progress);
+    }
+    delay(1);
+  }
+
+  http.end();
+
+  uint8_t hash[32];
+  mbedtls_sha256_finish_ret(&sha_ctx, hash);
+  mbedtls_sha256_free(&sha_ctx);
+
+  if (written != m.size) {
+    err = "下载不完整";
+    Update.abort();
+    return false;
+  }
+
+  if (m.sha256.length() == 64) {
+    String actual = sha256Hex(hash);
+    if (!actual.equalsIgnoreCase(m.sha256)) {
+      err = "SHA256 校验失败";
+      Update.abort();
+      return false;
+    }
+  }
+
+  if (!Update.end(true)) {
+    err = String("OTA 结束失败 ") + Update.getError();
+    return false;
+  }
+  if (!Update.isFinished()) {
+    err = "OTA 未完成";
+    return false;
+  }
+  return true;
+}
+
+void app_remote_ota_run() {
+  bool b_primed = false;
+  bool longpress_sent = false;
+
+  if (WiFi.status() != WL_CONNECTED) {
+    drawRemoteOTAScreen("WiFi 未连接", "", -2);
+    delay(1800);
+    return;
+  }
+
+  String manifest_url = REMOTE_OTA_MANIFEST_URL;
+  if (manifest_url.length() == 0) {
+    drawRemoteOTAScreen("远程 OTA 未配置", "请设置 manifest URL", -2);
+    delay(2200);
+    return;
+  }
+
+  char detail[48];
+  snprintf(detail, sizeof(detail), "当前版本 %s", APP_VERSION);
+  drawRemoteOTAScreen("检查远程更新", detail, -1);
+
+  while (true) {
+    M5.update();
+    screen_saver_kick();
+
+    if (!b_primed) {
+      if (!M5.BtnB.isPressed()) b_primed = true;
+      delay(20);
+      continue;
+    }
+
+    if (M5.BtnB.pressedFor(LONG_PRESS_MS)) {
+      if (!longpress_sent) { longpress_sent = true; beep_ok(); }
+    }
+    if (longpress_sent && !M5.BtnB.isPressed()) return;
+
+    if (M5.BtnB.wasReleased() && !longpress_sent) {
+      M5.Speaker.end();
+      M5.Mic.end();
+
+      RemoteManifest manifest;
+      String err;
+      drawRemoteOTAScreen("读取 manifest", "", 0);
+      if (!fetchRemoteManifest(manifest, err)) {
+        drawRemoteOTAScreen("检查失败", err.c_str(), -2);
+        delay(2200);
+        M5.Speaker.begin();
+        apply_volume();
+        return;
+      }
+
+      if (manifest.version.length() > 0 && manifest.version == APP_VERSION) {
+        drawRemoteOTAScreen("已经是最新版", manifest.version.c_str(), -1);
+        delay(1800);
+        M5.Speaker.begin();
+        apply_volume();
+        return;
+      }
+
+      char ver[48];
+      snprintf(ver, sizeof(ver), "%s -> %s", APP_VERSION,
+               manifest.version.length() ? manifest.version.c_str() : "new");
+      drawRemoteOTAScreen("准备升级", ver, 0);
+      delay(500);
+
+      if (!downloadAndApplyRemoteOTA(manifest, err)) {
+        drawRemoteOTAScreen("升级失败", err.c_str(), -2);
+        delay(2600);
+        M5.Speaker.begin();
+        apply_volume();
+        return;
+      }
+
+      drawRemoteOTAScreen("升级成功", "正在重启", 100);
+      delay(1200);
+      ESP.restart();
+    }
+
+    delay(20);
   }
 }

@@ -1,0 +1,105 @@
+# StickS3 Desktop System
+
+Author: 国产电灯泡
+
+一个运行在 M5Stack StickS3 上的口袋桌面系统。
+
+## 功能
+
+- Claude / Codex 小秘书：语音输入到电脑端，并显示实时状态
+- 仪表盘：时间、天气、B 站粉丝数
+- 红外遥控：学习和发送红外码
+- 网络电台：在线收音机
+- OTA 升级：WiFi 无线更新固件
+- 设置：音量、亮度、旋转、熄屏、WiFi 配网、远程 OTA
+
+## 使用
+
+首次启动会创建热点 `StickS3-Setup`，连接后打开：
+
+```text
+http://192.168.4.1
+```
+
+在页面里配置 WiFi，并填写科大讯飞 IAT 应用的：
+
+```text
+APPID / APISecret / APIKey
+```
+
+语音识别需要用户自己的科大讯飞 API。固件不内置真实密钥。
+
+## 编译
+
+```powershell
+python -m platformio run -d .
+```
+
+## 上传
+
+USB 首次烧录：
+
+```powershell
+python -m platformio run -d . -t upload --upload-port COM6
+```
+
+OTA 上传：
+
+```powershell
+python -m platformio run -d . -t upload --upload-port 设备IP
+```
+
+远程 OTA 可放到 GitHub Release。固件里配置 `REMOTE_OTA_MANIFEST_URL` 后，板子在 **设置 → 远程 OTA** 里检查更新。
+
+`manifest.json` 格式：
+
+```json
+{
+  "version": "1.0.0",
+  "url": "https://github.com/OWNER/REPO/releases/latest/download/firmware.bin",
+  "sha256": "firmware.bin 的 sha256",
+  "size": 2957445
+}
+```
+
+## PC 助手
+
+Claude / Codex 小秘书需要运行 Windows 助手：
+
+```powershell
+python helper\type_server.py
+```
+
+不想装 Python 的用户，可以从 GitHub Release 下载打包版：
+
+```text
+StickS3Helper.exe
+```
+
+右下角托盘图标可以打开配置、查看日志、绑定 Claude/Codex 输入目标。
+
+推荐用法：
+
+1. 先启动 PC 助手
+2. 打开 Claude Code 或 Codex
+3. 在托盘菜单里绑定对应的输入目标
+4. 板子进入小秘书，长按 A 说话
+
+如果在 VS Code 里焦点不稳定，再绑定一次对应的输入框位置。
+
+## 密钥
+
+不要提交真实密钥。
+
+- `src/secrets.example.h` 是模板
+- `src/secrets.h` 是本地私有文件，已加入 `.gitignore`
+- 推荐通过 WiFi 配网页保存讯飞 API
+- 远程 OTA 地址也可写在 `src/secrets.h`
+
+## 说明
+
+完整使用说明见 [USER_MANUAL.md](USER_MANUAL.md)。
+
+## License
+
+MIT License. See [LICENSE](LICENSE).

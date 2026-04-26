@@ -2,21 +2,22 @@
 """
 Claude Code hook → StickS3 status bridge.
 
-Reads the JSON event Claude Code pipes on stdin (hook format), derives a short
-Chinese label describing what's happening, and POSTs it to the voice keyboard
-helper running on localhost:8765 so the StickS3 screen can show it.
+Reads the JSON event Claude Code pipes on stdin, or the JSON string Codex
+passes as a notify argument, derives a short Chinese label describing what's
+happening, and POSTs it to the voice keyboard helper running on localhost:8765
+so the StickS3 screen can show it.
 
 Wire this into .claude/settings.json as PreToolUse / PostToolUse / Stop hook.
 
 Always exits quickly (1s timeout). Never blocks Claude Code.
 """
 
+import argparse
 import json
 import os
 import sys
 import urllib.request
 
-HELPER_URL = "http://localhost:8765/status"
 TIMEOUT    = 0.8
 
 # Display tool events in the Claude-Code terminal style:
@@ -42,13 +43,21 @@ def infer_event(data: dict) -> str:
 
 
 def label_for(data: dict) -> str:
+    if data.get("type") == "agent-turn-complete":
+        full = (
+            data.get("last-assistant-message")
+            or data.get("last_assistant_message")
+            or ""
+        ).replace("\n", " ").strip()
+        return "\x01C" + (full[:30] if full else "（完成）")
+
     event = infer_event(data)
     tool  = data.get("tool_name", "")
 
     if event == "PreToolUse":
         inp = data.get("tool_input", {}) or {}
         arg = ""
-        if tool == "Bash":
+        if tool in ("Bash", "shell_command"):
             arg = (inp.get("command") or "").split("\n")[0]
         elif tool in ("Read", "Edit", "Write"):
             p = inp.get("file_path") or ""
@@ -114,19 +123,29 @@ def label_for(data: dict) -> str:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--channel", choices=("claude", "codex"), default=os.environ.get("STICKS3_CHANNEL", "claude"))
+    args, rest = parser.parse_known_args()
+    helper_url = "http://localhost:8765/codex/status" if args.channel == "codex" else "http://localhost:8765/status"
+
     try:
-        # Claude Code pipes JSON in UTF-8; Windows' default stdin encoding is
-        # GBK/cp936 which mangles CJK. Read raw bytes and decode explicitly.
-        raw = sys.stdin.buffer.read().decode("utf-8", errors="replace")
-        data = json.loads(raw) if raw.strip() else {}
+        if rest:
+            raw = rest[-1]
+        else:
+            # Claude Code pipes JSON in UTF-8; Windows' default stdin encoding is
+            # GBK/cp936 which mangles CJK. Read raw bytes and decode explicitly.
+            raw = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+        if not raw.strip():
+            return
+        data = json.loads(raw)
     except Exception:
-        data = {}
+        return
     text = label_for(data)
     if not text:
         return  # empty label = skip POST (e.g. PostToolUse for non-Bash)
     try:
         body = json.dumps({"text": text}).encode("utf-8")
-        req = urllib.request.Request(HELPER_URL, data=body,
+        req = urllib.request.Request(helper_url, data=body,
                                      headers={"Content-Type": "application/json"},
                                      method="POST")
         # Bypass any HTTP_PROXY env var — helper is on localhost, should

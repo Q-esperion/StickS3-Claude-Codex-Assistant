@@ -1,4 +1,5 @@
 #include "app.h"
+#include "remote_ota_config.h"
 #include <Preferences.h>
 
 static int  s_volume = 6;           // 0..10
@@ -79,8 +80,8 @@ void maybe_auto_rotate() {
   }
 }
 
-static int s_cursor = 0;  // 0=volume 1=brightness 2=rotate 3=screen-timeout 4=wifi-portal
-static const int N_ROWS = 5;
+static int s_cursor = 0;  // 0=volume 1=brightness 2=rotate 3=screen-timeout 4=wifi 5=remote-ota 6=clear-net
+static const int N_ROWS = 7;
 
 static const int TIMEOUT_STEPS[] = { 0, 15, 30, 60, 120, 300 };
 static const int N_TIMEOUT_STEPS = sizeof(TIMEOUT_STEPS) / sizeof(TIMEOUT_STEPS[0]);
@@ -93,11 +94,15 @@ static int timeoutStepIndex() {
 static void drawUI() {
   g_canvas.fillScreen(CLR_BG);
   draw_title("设置");
+  g_canvas.setFont(&fonts::efontCN_12);
+  g_canvas.setTextColor(CLR_DIM, CLR_CARD);
+  g_canvas.setTextDatum(middle_left);
+  g_canvas.drawString(String("v") + APP_VERSION, 64, 12);
 
-  int row_h = 22;
-  int start_y = 24;
+  int row_h = 16;
+  int start_y = 22;
 
-  const char* labels[N_ROWS] = {"音量", "亮度", "自动旋转", "自动熄屏", "WiFi 配网"};
+  const char* labels[N_ROWS] = {"音量", "亮度", "自动旋转", "自动熄屏", "WiFi 配网", "远程 OTA", "清除配网"};
 
   for (int i = 0; i < N_ROWS; i++) {
     int y = start_y + i * row_h;
@@ -117,7 +122,7 @@ static void drawUI() {
       g_canvas.drawString(vbuf, SCR_W - 8, y + 7);
 
       int bar_x = 8;
-      int bar_y = y + 14;
+      int bar_y = y + 13;
       int bar_w = SCR_W - 16;
       int bar_h = 4;
       g_canvas.drawRoundRect(bar_x, bar_y, bar_w, bar_h, 2, CLR_DIM);
@@ -137,11 +142,21 @@ static void drawUI() {
       else snprintf(buf, sizeof(buf), "%d 分", s_screen_timeout / 60);
       g_canvas.setTextColor(s_screen_timeout == 0 ? CLR_DIM : CLR_GOOD, CLR_BG);
       g_canvas.drawString(buf, SCR_W - 8, y + 7);
-    } else {
+    } else if (i == 4) {
       // WiFi 配网 — action row, B press triggers portal.
       g_canvas.setTextDatum(middle_right);
       g_canvas.setTextColor(sel ? CLR_ACCENT : CLR_DIM, CLR_BG);
       g_canvas.drawString("点 B 开始", SCR_W - 8, y + 7);
+    } else if (i == 5) {
+      // Remote OTA — fetches a GitHub Release manifest if configured.
+      g_canvas.setTextDatum(middle_right);
+      g_canvas.setTextColor(sel ? CLR_ACCENT2 : CLR_DIM, CLR_BG);
+      g_canvas.drawString("点 B 检查", SCR_W - 8, y + 7);
+    } else {
+      // 清除配网 — clears WiFi, site, and iFlytek credentials, then restarts.
+      g_canvas.setTextDatum(middle_right);
+      g_canvas.setTextColor(sel ? CLR_WARN : CLR_DIM, CLR_BG);
+      g_canvas.drawString("点 B 重置", SCR_W - 8, y + 7);
     }
   }
 
@@ -159,7 +174,7 @@ void app_settings_run() {
   bool b_primed = false;
   while (true) {
     M5.update();
-    screen_saver_tick();
+    if (screen_saver_tick()) { delay(20); continue; }
     maybe_auto_rotate();
 
     if (!b_primed) {
@@ -197,7 +212,7 @@ void app_settings_run() {
         int idx = (timeoutStepIndex() + 1) % N_TIMEOUT_STEPS;
         s_screen_timeout = TIMEOUT_STEPS[idx];
         screen_saver_kick();   // reset idle timer so change takes effect cleanly
-      } else {
+      } else if (s_cursor == 4) {
         // WiFi 重新配网 — save current settings first, then hand the screen
         // over to WiFiManager. When it returns (connected or timed out) we
         // redraw our UI and continue.
@@ -208,6 +223,30 @@ void app_settings_run() {
         screen_saver_kick();
         drawUI();
         continue;
+      } else if (s_cursor == 5) {
+        save_settings();
+        beep_ok();
+        stick_log("info", "settings: remote OTA");
+        app_remote_ota_run();
+        screen_saver_kick();
+        drawUI();
+        continue;
+      } else {
+        save_settings();
+        beep_bad();
+        g_canvas.fillScreen(CLR_BG);
+        draw_title("清除配网");
+        g_canvas.setFont(&fonts::efontCN_16);
+        g_canvas.setTextColor(CLR_WARN, CLR_BG);
+        g_canvas.setCursor(8, 34); g_canvas.print("正在清除...");
+        g_canvas.setFont(&fonts::efontCN_14);
+        g_canvas.setTextColor(CLR_DIM, CLR_BG);
+        g_canvas.setCursor(8, 62); g_canvas.print("WiFi 和讯飞配置");
+        g_canvas.setCursor(8, 82); g_canvas.print("将回到首次配网");
+        push_frame();
+        wifi_clear_saved_config();
+        delay(900);
+        ESP.restart();
       }
       save_settings();
       beep_ok();

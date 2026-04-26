@@ -1,23 +1,23 @@
 #include "app.h"
+#include "remote_ota_config.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
 
-// PC helper IP used by stick_log() — same as app_voicekb.cpp's PC_IP.
-// If the user's LAN IP changes, update both places.
-static const char* LOG_PC_IP = "192.168.31.124";
-static const int   LOG_PC_PORT = 8765;
+// PC helper endpoint used by stick_log(). Voice apps update the same NVS keys
+// after UDP discovery, so logs follow the helper when its IP changes.
+static const char* LOG_PC_IP_DEFAULT = "";
+static const int   LOG_PC_PORT_DEFAULT = 8765;
 
 M5Canvas g_canvas(&M5.Display);
 
-// Set true the first time the radio app initializes Audio library. Once
-// flipped, M5.Speaker is dead for the rest of the boot — beep_ok/beep_bad
-// become no-ops, apply_volume doesn't route through M5.Speaker. Prevents
-// I2S ownership conflicts that used to panic the board on radio exit.
+// Set true while the radio app owns I2S through ESP32-audioI2S. During that
+// window, shared speaker helpers become no-ops to prevent I2S conflicts.
 bool g_radio_owns_i2s = false;
 
 // ---- screen saver ---------------------------------------------------------
@@ -34,18 +34,36 @@ void screen_saver_kick() {
   s_last_activity_ms = millis();
 }
 
-void screen_saver_tick() {
+bool screen_saver_tick() {
+  static bool s_swallow_until_release = false;
+
+  if (s_swallow_until_release) {
+    if (M5.BtnA.isPressed() || M5.BtnB.isPressed()) {
+      screen_saver_kick();
+      return true;
+    }
+    s_swallow_until_release = false;
+  }
+
   // Any button state = activity. `isPressed` covers held buttons too.
   if (M5.BtnA.wasPressed() || M5.BtnB.wasPressed() ||
       M5.BtnA.isPressed()  || M5.BtnB.isPressed()) {
+    bool woke = s_screen_off;
     screen_saver_kick();
-    return;
+    if (woke) {
+      s_swallow_until_release = true;
+      return true;
+    }
+    return false;
   }
+  int timeout_sec = get_screen_timeout_sec();
+  if (timeout_sec <= 0) return false;  // 0 means "never sleep".
   uint32_t idle = millis() - s_last_activity_ms;
-  if (!s_screen_off && idle > (uint32_t)get_screen_timeout_sec() * 1000UL) {
+  if (!s_screen_off && idle > (uint32_t)timeout_sec * 1000UL) {
     ledcWrite(3, 0);          // backlight off
     s_screen_off = true;
   }
+  return false;
 }
 
 // ---- OTA (WiFi firmware upload) ------------------------------------------
@@ -72,6 +90,17 @@ static QueueHandle_t s_log_queue = nullptr;
 static uint32_t s_log_next_try_ms = 0;
 static int      s_log_fail_streak = 0;
 
+static void loadLogEndpoint(String& ip, int& port) {
+  ip = LOG_PC_IP_DEFAULT;
+  port = LOG_PC_PORT_DEFAULT;
+  Preferences p;
+  if (p.begin("pc", true)) {
+    ip = p.getString("ip", ip);
+    port = p.getInt("port", port);
+    p.end();
+  }
+}
+
 static void stickLogWorkerTask(void* arg) {
   StickLogMsg m;
   for (;;) {
@@ -81,7 +110,11 @@ static void stickLogWorkerTask(void* arg) {
 
     HTTPClient http;
     http.setTimeout(600);
-    String url = String("http://") + LOG_PC_IP + ":" + LOG_PC_PORT + "/log";
+    String ip;
+    int port;
+    loadLogEndpoint(ip, port);
+    if (ip.length() == 0) continue;
+    String url = String("http://") + ip + ":" + port + "/log";
     if (!http.begin(url)) { continue; }
     http.addHeader("Content-Type", "application/json");
     JsonDocument doc;
@@ -312,6 +345,7 @@ void setup() {
   // for debugging reboots). Done AFTER WiFi is connected so the POST lands.
   esp_reset_reason_t rr = esp_reset_reason();
   String boot_msg = String("boot  reason=") + resetReasonStr(rr)
+                  + "  version=" + APP_VERSION
                   + "  free=" + String(ESP.getFreeHeap() / 1024) + "KB"
                   + "  psram=" + String(ESP.getFreePsram() / 1024) + "KB";
   stick_log(rr == ESP_RST_POWERON || rr == ESP_RST_SW ? "info" : "warn", boot_msg);
@@ -320,18 +354,19 @@ void setup() {
 void loop() {
   int pick = menu_run();
   static const char* const names[] = {
-    "voicekb", "clock", "ir", "radio", "ota", "settings"
+    "voicekb", "codex", "clock", "ir", "radio", "ota", "settings"
   };
   if (pick >= 0 && pick < (int)(sizeof(names) / sizeof(names[0]))) {
     stick_log("info", String("enter ") + names[pick]);
   }
   switch (pick) {
     case 0: app_voicekb_run(); break;
-    case 1: app_clock_run();   break;
-    case 2: app_ir_run();      break;
-    case 3: app_radio_run();   break;
-    case 4: app_ota_run();     break;
-    case 5: app_settings_run(); break;
+    case 1: app_codex_run();   break;
+    case 2: app_clock_run();   break;
+    case 3: app_ir_run();      break;
+    case 4: app_radio_run();   break;
+    case 5: app_ota_run();     break;
+    case 6: app_settings_run(); break;
   }
   if (pick >= 0 && pick < (int)(sizeof(names) / sizeof(names[0]))) {
     stick_log("info", String("exit ") + names[pick]);

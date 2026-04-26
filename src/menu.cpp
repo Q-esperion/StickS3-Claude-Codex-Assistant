@@ -2,6 +2,7 @@
 
 static const char* const APP_NAMES[] = {
   "Claude 小秘书",
+  "Codex 小秘书",
   "仪表盘",
   "红外遥控",
   "网络电台",
@@ -10,8 +11,9 @@ static const char* const APP_NAMES[] = {
 };
 static const char* const APP_DESC[] = {
   "语音输入到 PC",
+  "语音输入 Codex",
   "时钟 天气 B站",
-  "学习 / 回放",
+  "红外发射工具",
   "在线收音机",
   "无线烧录固件",
   "音量 / 亮度",
@@ -24,23 +26,23 @@ static void drawMenu() {
   g_canvas.fillScreen(CLR_BG);
   draw_title("StickS3");
 
-  int item_h = 16;
-  int start_y = 22;
+  const int item_h = 16;
+  const int start_y = 24;  // keep first selection clear of the title underline
   for (int i = 0; i < N_APPS; i++) {
     int y = start_y + i * item_h;
     bool sel = (i == g_cursor);
     if (sel) {
-      g_canvas.fillRoundRect(4, y, SCR_W - 8, item_h - 2, 3, CLR_ACCENT);
-      g_canvas.setTextColor(CLR_BG, CLR_ACCENT);
+      g_canvas.fillRoundRect(4, y, SCR_W - 8, item_h, 3, CLR_ACCENT);
+      g_canvas.setTextColor(CLR_BG);
     } else {
-      g_canvas.setTextColor(CLR_TEXT, CLR_BG);
+      g_canvas.setTextColor(CLR_TEXT);
     }
     g_canvas.setFont(&fonts::efontCN_14);
-    g_canvas.setTextDatum(middle_left);
-    g_canvas.drawString(APP_NAMES[i], 10, y + item_h / 2);
+    g_canvas.setTextDatum(top_left);
+    g_canvas.drawString(APP_NAMES[i], 10, y + 1);
     g_canvas.setFont(&fonts::efontCN_12);
-    g_canvas.setTextDatum(middle_right);
-    g_canvas.drawString(APP_DESC[i], SCR_W - 10, y + item_h / 2);
+    g_canvas.setTextDatum(top_right);
+    g_canvas.drawString(APP_DESC[i], SCR_W - 10, y + 2);
   }
   g_canvas.setTextDatum(top_left);
   push_frame();
@@ -52,7 +54,7 @@ int menu_run() {
 
   while (true) {
     M5.update();
-    screen_saver_tick();
+    if (screen_saver_tick()) { delay(20); continue; }
     maybe_auto_rotate();
     if (M5.BtnA.wasPressed()) {
       g_cursor = (g_cursor + 1) % N_APPS;
