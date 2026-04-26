@@ -18,6 +18,8 @@ from release_tools import (
     read_macro,
     release_tag_for_version,
     sync_latest_snapshot,
+    helper_version,
+    release_notes,
     write_release_bundle,
 )
 from status_logic import clean_text, codex_phase_for_text
@@ -65,8 +67,33 @@ class ReleaseToolsTest(unittest.TestCase):
         written = json.loads(write_text.call_args.args[0])
         self.assertEqual(written, expected)
 
+    def test_write_release_bundle_includes_helper_manifest(self):
+        with temp_workspace() as tmp:
+            root = Path(tmp)
+            fw = root / "firmware.bin"
+            helper = root / "StickS3ClaudeCodexHelper.exe"
+            out = root / "out"
+            fw.write_bytes(b"fw")
+            helper.write_bytes(b"helper")
+            write_release_bundle(
+                fw,
+                out,
+                "1.0.0",
+                "https://example.com/releases/latest/download/firmware.bin",
+                "notes",
+                helper,
+                "1.0.1",
+            )
+            helper_manifest = json.loads((out / "helper.json").read_text(encoding="utf-8"))
+            self.assertEqual(helper_manifest["version"], "1.0.1")
+            self.assertEqual(helper_manifest["asset"], "StickS3ClaudeCodexHelper.exe")
+            self.assertEqual(helper_manifest["size"], len(b"helper"))
+            self.assertIn("StickS3ClaudeCodexHelper.exe", helper_manifest["url"])
+
     def test_project_version_has_default(self):
         self.assertRegex(project_version(ROOT), r"^\d+\.\d+\.\d+")
+        self.assertRegex(helper_version(ROOT), r"^\d+\.\d+\.\d+")
+        self.assertTrue(release_notes(ROOT))
 
     def test_project_version_ignores_local_secrets_version(self):
         with temp_workspace() as tmp:

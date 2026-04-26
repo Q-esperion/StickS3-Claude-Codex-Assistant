@@ -36,20 +36,32 @@ Run (double-click or CLI):
 
 import atexit
 import ctypes
+import datetime as _dt
 import json
 import os
+import platform
 import re
 import socket
+import subprocess
 import sys
 import threading
 import time
+import zipfile
 from collections import deque
 from ctypes import wintypes
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
 from socketserver import ThreadingMixIn
 
 from status_logic import clean_text, codex_phase_for_text
-from update_check import DEFAULT_RELEASE_API_URL, fetch_latest_release, format_helper_update_summary
+from update_check import (
+    DEFAULT_RELEASE_API_URL,
+    download_helper_update,
+    fetch_latest_release,
+    format_helper_update_summary,
+    helper_update_info,
+)
+from version_info import HELPER_VERSION, RELEASE_PAGE_URL
 
 # Avoid duplicate tray helpers. A second instance cannot bind the ports anyway,
 # and two tray icons make it hard to know which config/log is active.
@@ -82,14 +94,14 @@ else:
     _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(_THIS_DIR, "config.json")
 LOG_FILE    = os.path.join(_THIS_DIR, "stick_log.txt")
-HELPER_VERSION = "0.1.4"
+CONFIG_SCHEMA_VERSION = 2
 
 DEFAULT_CONFIG = {
+    "config_version": CONFIG_SCHEMA_VERSION,
     "http_port": 8765,
     "udp_port": 8766,
     "discovery_enabled": True,
     "autostart": False,
-    "helper_release_api_url": DEFAULT_RELEASE_API_URL,
     "codex_session_watch_enabled": False,
     # When non-null, /type will focus this window before pasting. Captured
     # via tray menu "绑定当前窗口为输入目标". Shape: {"title": "...", "class": "..."}.
@@ -109,17 +121,44 @@ DEFAULT_CONFIG = {
 }
 
 
+def _fresh_default_config():
+    return json.loads(json.dumps(DEFAULT_CONFIG, ensure_ascii=False))
+
+
 def load_config():
     if not os.path.exists(CONFIG_PATH):
-        _save(DEFAULT_CONFIG)
-        return dict(DEFAULT_CONFIG)
+        cfg = _fresh_default_config()
+        _save(cfg)
+        return cfg
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
             cfg = json.load(f)
-    except Exception:
-        cfg = {}
+    except Exception as e:
+        try:
+            backup = CONFIG_PATH + f".bad-{int(time.time())}"
+            os.replace(CONFIG_PATH, backup)
+            print(f"[warn] config unreadable, backed up to {backup}: {e}")
+        except Exception:
+            print(f"[warn] config unreadable and backup failed: {e}")
+        cfg = _fresh_default_config()
+        _save(cfg)
+        return cfg
+    changed = False
     for k, v in DEFAULT_CONFIG.items():
-        cfg.setdefault(k, v)
+        if k not in cfg:
+            cfg[k] = v
+            changed = True
+    # v0.1.x exposed the release API URL as an editable field. Keep updates
+    # pinned to the official project so the UI cannot be misconfigured.
+    for old_key in ("helper_release_api_url", "firmware_manifest_url"):
+        if old_key in cfg:
+            cfg.pop(old_key, None)
+            changed = True
+    if cfg.get("config_version") != CONFIG_SCHEMA_VERSION:
+        cfg["config_version"] = CONFIG_SCHEMA_VERSION
+        changed = True
+    if changed:
+        _save(cfg)
     return cfg
 
 
@@ -743,7 +782,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/ping":
-            self._send_json(200, {"ok": True, "service": "sticks3-typebuddy"})
+            self._send_json(200, {
+                "ok": True,
+                "service": "sticks3-typebuddy",
+                "helper_version": HELPER_VERSION,
+                "config_version": CONFIG.get("config_version"),
+            })
         elif self.path == "/status":
             self._send_json(200, get_status_snapshot())
         elif self.path == "/codex/status":
@@ -925,6 +969,152 @@ def set_autostart(enable: bool) -> None:
             print(f"[warn] autostart disable failed: {e}")
 
 
+def helper_executable_path() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable)
+    return Path(_THIS_DIR) / "dist" / "StickS3ClaudeCodexHelper.exe"
+
+
+def open_release_page():
+    try:
+        os.startfile(RELEASE_PAGE_URL)
+    except Exception as e:
+        print(f"[warn] open release page: {e}")
+
+
+def export_diagnostics(parent=None):
+    try:
+        from tkinter import messagebox
+    except Exception:
+        messagebox = None
+
+    diag_dir = Path(_THIS_DIR) / "diagnostics"
+    diag_dir.mkdir(parents=True, exist_ok=True)
+    stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    out = diag_dir / f"StickS3HelperDiag_{stamp}.zip"
+    summary = {
+        "helper_version": HELPER_VERSION,
+        "config_version": CONFIG.get("config_version"),
+        "local_ip": local_ip(),
+        "http_port": CONFIG.get("http_port"),
+        "udp_port": CONFIG.get("udp_port"),
+        "discovery_enabled": CONFIG.get("discovery_enabled"),
+        "autostart": CONFIG.get("autostart"),
+        "claude_target": format_target_status("target_window", "Claude"),
+        "codex_target": format_target_status("codex_target_window", "Codex"),
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "exe": str(helper_executable_path()),
+        "platform": platform.platform(),
+        "python": sys.version,
+    }
+    try:
+        with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as z:
+            z.writestr("summary.json", json.dumps(summary, ensure_ascii=False, indent=2))
+            if os.path.exists(CONFIG_PATH):
+                z.write(CONFIG_PATH, "config.json")
+            if os.path.exists(LOG_FILE):
+                z.write(LOG_FILE, "stick_log.txt")
+            latest_log = Path(_THIS_DIR) / "dist" / "stick_log.txt"
+            if latest_log.exists() and str(latest_log) != LOG_FILE:
+                z.write(latest_log, "dist_stick_log.txt")
+        if messagebox:
+            messagebox.showinfo("诊断包已导出", str(out), parent=parent)
+        try:
+            os.startfile(str(diag_dir))
+        except Exception:
+            pass
+        return out
+    except Exception as e:
+        if messagebox:
+            messagebox.showerror("导出失败", str(e), parent=parent)
+        else:
+            print(f"[warn] diagnostic export failed: {e}")
+        return None
+
+
+def install_helper_update(info: dict, parent=None) -> None:
+    try:
+        from tkinter import messagebox
+    except Exception:
+        messagebox = None
+
+    latest = info.get("latest_version") or "latest"
+    downloads = Path(_THIS_DIR) / "updates"
+    dest = downloads / f"StickS3ClaudeCodexHelper-{latest}.exe"
+    try:
+        actual_sha = download_helper_update(info, dest)
+    except Exception as e:
+        if messagebox:
+            messagebox.showerror("下载失败", str(e), parent=parent)
+        else:
+            print(f"[warn] helper update download failed: {e}")
+        return
+
+    if not getattr(sys, "frozen", False):
+        if messagebox:
+            messagebox.showinfo(
+                "已下载助手",
+                f"源码运行模式不会自动替换 exe。\n\n文件已下载：\n{dest}\nSHA256: {actual_sha}",
+                parent=parent,
+            )
+        try:
+            os.startfile(str(downloads))
+        except Exception:
+            pass
+        return
+
+    current = helper_executable_path()
+    backup = current.with_suffix(f".{HELPER_VERSION}.bak.exe")
+    script = Path(_THIS_DIR) / "apply_helper_update.ps1"
+    script.write_text(
+        """param(
+  [string]$Current,
+  [string]$NewExe,
+  [string]$Backup,
+  [int]$OldPid
+)
+$ErrorActionPreference = 'Stop'
+try { Wait-Process -Id $OldPid -Timeout 30 -ErrorAction SilentlyContinue } catch {}
+Start-Sleep -Milliseconds 700
+if (Test-Path -LiteralPath $Current) {
+  Copy-Item -LiteralPath $Current -Destination $Backup -Force
+}
+Copy-Item -LiteralPath $NewExe -Destination $Current -Force
+Start-Process -FilePath $Current -WorkingDirectory (Split-Path -Parent $Current) -WindowStyle Hidden
+try { Remove-Item -LiteralPath $PSCommandPath -Force } catch {}
+""",
+        encoding="utf-8",
+    )
+    if messagebox:
+        ok = messagebox.askyesno(
+            "安装助手更新",
+            "助手将退出、替换 exe，然后自动重新启动。\n\n现在安装吗？",
+            parent=parent,
+        )
+        if not ok:
+            return
+    subprocess.Popen(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            str(current),
+            str(dest),
+            str(backup),
+            str(os.getpid()),
+        ],
+        creationflags=0x08000000,
+    )
+    try:
+        _release_all_modifiers()
+    except Exception:
+        pass
+    os._exit(0)
+
+
 # ==========================================================================
 # Config dialog (tkinter)
 # ==========================================================================
@@ -950,40 +1140,69 @@ def open_config_dialog():
 
     root = tk.Tk()
     root.title("StickS3 小秘书 · 配置")
-    root.geometry("560x680")
+    root.geometry("640x720")
     root.resizable(False, False)
+
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")
+    except Exception:
+        pass
+    style.configure("Title.TLabel", font=("Microsoft YaHei UI", 16, "bold"))
+    style.configure("Hint.TLabel", foreground="#6B7280")
+    style.configure("Value.TLabel", foreground="#111827")
+    style.configure("Accent.TButton", padding=(12, 6))
 
     frm = ttk.Frame(root, padding=12)
     frm.pack(fill="both", expand=True)
 
-    # IP/port info (read-only)
-    ip_var = tk.StringVar(value=f"本机 IP: {local_ip()}")
-    ttk.Label(frm, textvariable=ip_var, foreground="gray").pack(anchor="w")
+    header = ttk.Frame(frm)
+    header.pack(fill="x", pady=(0, 10))
+    ttk.Label(header, text="StickS3 小秘书", style="Title.TLabel").pack(side="left")
+    ttk.Label(header, text=f"v{HELPER_VERSION}", style="Hint.TLabel").pack(side="right", pady=(7, 0))
+
+    status_box = ttk.LabelFrame(frm, text="运行状态", padding=10)
+    status_box.pack(fill="x", pady=(0, 8))
+    ip_var = tk.StringVar(value=local_ip())
     claude_target_var = tk.StringVar(value=format_target_status("target_window", "Claude"))
     codex_target_var = tk.StringVar(value=format_target_status("codex_target_window", "Codex"))
-    ttk.Label(frm, textvariable=claude_target_var, foreground="gray").pack(anchor="w", pady=(4, 0))
-    ttk.Label(frm, textvariable=codex_target_var, foreground="gray").pack(anchor="w")
+    ttk.Label(status_box, text="本机 IP").grid(row=0, column=0, sticky="w")
+    ttk.Label(status_box, textvariable=ip_var, style="Value.TLabel").grid(row=0, column=1, sticky="w", padx=(12, 0))
+    ttk.Label(status_box, text="Claude").grid(row=1, column=0, sticky="w", pady=(6, 0))
+    ttk.Label(status_box, textvariable=claude_target_var, style="Value.TLabel").grid(row=1, column=1, sticky="w", padx=(12, 0), pady=(6, 0))
+    ttk.Label(status_box, text="Codex").grid(row=2, column=0, sticky="w", pady=(4, 0))
+    ttk.Label(status_box, textvariable=codex_target_var, style="Value.TLabel").grid(row=2, column=1, sticky="w", padx=(12, 0), pady=(4, 0))
+    status_box.columnconfigure(1, weight=1)
 
-    row = ttk.Frame(frm); row.pack(fill="x", pady=6)
-    ttk.Label(row, text="HTTP 端口").grid(row=0, column=0, sticky="w")
+    net_box = ttk.LabelFrame(frm, text="网络与启动", padding=10)
+    net_box.pack(fill="x", pady=(0, 8))
+    ttk.Label(net_box, text="HTTP 端口").grid(row=0, column=0, sticky="w")
     http_var = tk.StringVar(value=str(CONFIG["http_port"]))
-    ttk.Entry(row, textvariable=http_var, width=10).grid(row=0, column=1, padx=6)
-    ttk.Label(row, text="UDP 发现端口").grid(row=0, column=2, sticky="w", padx=(12, 0))
+    ttk.Entry(net_box, textvariable=http_var, width=10).grid(row=0, column=1, padx=(10, 18), sticky="w")
+    ttk.Label(net_box, text="UDP 发现端口").grid(row=0, column=2, sticky="w")
     udp_var = tk.StringVar(value=str(CONFIG["udp_port"]))
-    ttk.Entry(row, textvariable=udp_var, width=10).grid(row=0, column=3, padx=6)
-
-    release_api_var = tk.StringVar(value=CONFIG.get("helper_release_api_url", DEFAULT_RELEASE_API_URL))
-    ttk.Label(frm, text=f"助手更新地址  当前 v{HELPER_VERSION}").pack(anchor="w", pady=(4, 2))
-    ttk.Entry(frm, textvariable=release_api_var).pack(fill="x")
-
+    ttk.Entry(net_box, textvariable=udp_var, width=10).grid(row=0, column=3, padx=(10, 0), sticky="w")
     discovery_var = tk.BooleanVar(value=CONFIG["discovery_enabled"])
-    ttk.Checkbutton(frm, text="启用 UDP 自动发现", variable=discovery_var).pack(anchor="w", pady=4)
-
+    ttk.Checkbutton(net_box, text="启用 UDP 自动发现", variable=discovery_var).grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
     autostart_var = tk.BooleanVar(value=CONFIG.get("autostart", False))
-    ttk.Checkbutton(frm, text="开机自动启动", variable=autostart_var).pack(anchor="w", pady=4)
+    ttk.Checkbutton(net_box, text="开机自动启动", variable=autostart_var).grid(row=1, column=2, columnspan=2, sticky="w", pady=(8, 0))
+
+    update_box = ttk.LabelFrame(frm, text="助手更新", padding=10)
+    update_box.pack(fill="x", pady=(0, 8))
+    latest_var = tk.StringVar(value="尚未检查")
+    update_state_var = tk.StringVar(value="官方 Release 通道")
+    update_detail_var = tk.StringVar(value="更新地址由程序内置，避免误删或误改。")
+    ttk.Label(update_box, text="当前版本").grid(row=0, column=0, sticky="w")
+    ttk.Label(update_box, text=f"v{HELPER_VERSION}", style="Value.TLabel").grid(row=0, column=1, sticky="w", padx=(12, 0))
+    ttk.Label(update_box, text="最新版本").grid(row=1, column=0, sticky="w", pady=(6, 0))
+    ttk.Label(update_box, textvariable=latest_var, style="Value.TLabel").grid(row=1, column=1, sticky="w", padx=(12, 0), pady=(6, 0))
+    ttk.Label(update_box, text="状态").grid(row=2, column=0, sticky="w", pady=(6, 0))
+    ttk.Label(update_box, textvariable=update_state_var, style="Value.TLabel", wraplength=470).grid(row=2, column=1, sticky="w", padx=(12, 0), pady=(6, 0))
+    ttk.Label(update_box, textvariable=update_detail_var, style="Hint.TLabel", wraplength=590).grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+    latest_info = {"value": None}
 
     def refresh_status_labels():
-        ip_var.set(f"本机 IP: {local_ip()}")
+        ip_var.set(local_ip())
         claude_target_var.set(format_target_status("target_window", "Claude"))
         codex_target_var.set(format_target_status("codex_target_window", "Codex"))
 
@@ -1002,32 +1221,74 @@ def open_config_dialog():
         threading.Thread(target=do, daemon=True).start()
 
     def check_helper_update():
-        url = release_api_var.get().strip()
-        if not url:
-            messagebox.showwarning("未配置地址", "请先填写助手更新地址。")
-            return
+        update_state_var.set("正在检查...")
+        update_detail_var.set("正在读取 GitHub 最新 Release。")
+        install_btn.configure(state="disabled")
 
         def do():
             try:
-                release = fetch_latest_release(url)
+                release = fetch_latest_release(DEFAULT_RELEASE_API_URL)
+                info = helper_update_info(release, HELPER_VERSION)
                 summary = format_helper_update_summary(release, HELPER_VERSION)
             except Exception as e:
                 msg = str(e)
-                root.after(0, lambda msg=msg: messagebox.showerror("检查失败", msg))
+                root.after(0, lambda msg=msg: (
+                    update_state_var.set("检查失败"),
+                    update_detail_var.set(msg),
+                    messagebox.showerror("检查失败", msg)
+                ))
                 return
-            root.after(0, lambda: messagebox.showinfo("助手更新", summary))
+
+            def done():
+                latest_info["value"] = info
+                latest_var.set("v" + (info.get("latest_version") or "未知"))
+                if info.get("is_newer") is True:
+                    update_state_var.set("发现新版")
+                    install_btn.configure(state="normal" if info.get("url") else "disabled")
+                elif info.get("is_newer") is False:
+                    update_state_var.set("已是最新版")
+                    install_btn.configure(state="disabled")
+                else:
+                    update_state_var.set("版本状态未知")
+                    install_btn.configure(state="normal" if info.get("url") else "disabled")
+                update_detail_var.set(summary.replace("\n", "  |  "))
+
+            root.after(0, done)
 
         threading.Thread(target=do, daemon=True).start()
 
-    action_row = ttk.Frame(frm); action_row.pack(fill="x", pady=(4, 8))
-    ttk.Button(action_row, text="刷新状态", command=refresh_status_labels).pack(side="left")
-    ttk.Button(action_row, text="检查助手更新", command=check_helper_update).pack(side="left", padx=6)
-    ttk.Button(action_row, text="打开日志目录", command=open_log_folder).pack(side="left")
-    ttk.Button(action_row, text="测试 Claude", command=lambda: test_target("target_window", "Claude")).pack(side="right")
-    ttk.Button(action_row, text="测试 Codex", command=lambda: test_target("codex_target_window", "Codex")).pack(side="right", padx=6)
+    def install_selected_update():
+        info = latest_info.get("value")
+        if not info:
+            messagebox.showwarning("未检查更新", "请先检查助手更新。")
+            return
+        if not info.get("url"):
+            messagebox.showerror("无法安装", "最新 Release 中没有助手 exe 下载地址。")
+            return
+        update_state_var.set("正在下载...")
+        update_detail_var.set("下载并校验助手 exe，完成后会提示替换。")
+        root.update_idletasks()
+        install_helper_update(info, root)
 
-    ttk.Label(frm, text="语音纠错词表（每行一对，格式 `正则=替换`）:").pack(anchor="w", pady=(8, 2))
-    txt = tk.Text(frm, height=10, font=("Consolas", 10))
+    update_btns = ttk.Frame(update_box)
+    update_btns.grid(row=4, column=0, columnspan=3, sticky="w", pady=(10, 0))
+    ttk.Button(update_btns, text="检查助手更新", command=check_helper_update, style="Accent.TButton").pack(side="left")
+    install_btn = ttk.Button(update_btns, text="下载并安装", command=install_selected_update, state="disabled")
+    install_btn.pack(side="left", padx=(8, 0))
+    ttk.Button(update_btns, text="打开发布页", command=open_release_page).pack(side="left", padx=(8, 0))
+
+    actions_box = ttk.LabelFrame(frm, text="工具", padding=10)
+    actions_box.pack(fill="x", pady=(0, 8))
+    ttk.Button(actions_box, text="刷新状态", command=refresh_status_labels).pack(side="left")
+    ttk.Button(actions_box, text="测试 Claude", command=lambda: test_target("target_window", "Claude")).pack(side="left", padx=(8, 0))
+    ttk.Button(actions_box, text="测试 Codex", command=lambda: test_target("codex_target_window", "Codex")).pack(side="left", padx=(8, 0))
+    ttk.Button(actions_box, text="导出诊断包", command=lambda: export_diagnostics(root)).pack(side="right")
+    ttk.Button(actions_box, text="打开日志目录", command=open_log_folder).pack(side="right", padx=(0, 8))
+
+    corr_box = ttk.LabelFrame(frm, text="语音纠错词表", padding=10)
+    corr_box.pack(fill="both", expand=True)
+    ttk.Label(corr_box, text="每行一对，格式：正则=替换", style="Hint.TLabel").pack(anchor="w")
+    txt = tk.Text(corr_box, height=9, font=("Consolas", 10), relief="solid", borderwidth=1)
     txt.pack(fill="both", expand=True)
     for pat, repl in CONFIG["corrections"]:
         txt.insert("end", f"{pat}={repl}\n")
@@ -1047,11 +1308,11 @@ def open_config_dialog():
             pat, _, repl = line.partition("=")
             corr.append([pat.strip(), repl.strip()])
         new_cfg = {
+            "config_version": CONFIG_SCHEMA_VERSION,
             "http_port": http_port,
             "udp_port": udp_port,
             "discovery_enabled": discovery_var.get(),
             "autostart": autostart_var.get(),
-            "helper_release_api_url": release_api_var.get().strip() or DEFAULT_RELEASE_API_URL,
             "codex_session_watch_enabled": CONFIG.get("codex_session_watch_enabled", False),
             # Preserve the bound target window across config-dialog saves.
             "target_window": CONFIG.get("target_window"),
@@ -1068,7 +1329,7 @@ def open_config_dialog():
         root.destroy()
 
     btn_row = ttk.Frame(frm); btn_row.pack(fill="x", pady=(10, 0))
-    ttk.Button(btn_row, text="保存", command=on_save).pack(side="right")
+    ttk.Button(btn_row, text="保存", command=on_save, style="Accent.TButton").pack(side="right")
     ttk.Button(btn_row, text="取消", command=root.destroy).pack(side="right", padx=8)
 
     root.mainloop()
@@ -1086,13 +1347,12 @@ def open_log_folder(icon=None, item=None):
 
 def on_check_helper_update(icon=None, item=None):
     def do():
-        url = CONFIG.get("helper_release_api_url") or DEFAULT_RELEASE_API_URL
         try:
-            release = fetch_latest_release(url)
-            latest = str(release.get("tag_name") or release.get("name") or "未知版本")
-            summary = format_helper_update_summary(release, HELPER_VERSION).splitlines()
-            status = next((line.replace("状态: ", "") for line in summary if line.startswith("状态: ")), "")
-            show_tray_feedback(icon, "助手更新", f"当前 v{HELPER_VERSION} / 最新 {latest} {status}".strip(), restore_after=8.0)
+            release = fetch_latest_release(DEFAULT_RELEASE_API_URL)
+            info = helper_update_info(release, HELPER_VERSION)
+            latest = info.get("latest_version") or "未知版本"
+            status = "发现新版" if info.get("is_newer") is True else "已是最新版"
+            show_tray_feedback(icon, "助手更新", f"当前 v{HELPER_VERSION} / 最新 v{latest} {status}".strip(), restore_after=8.0)
         except Exception as e:
             show_tray_feedback(icon, "检查更新失败", str(e)[:80], restore_after=8.0)
 
@@ -1287,6 +1547,8 @@ def start_tray():
         pystray.MenuItem("打开配置", lambda icon, item: threading.Thread(
             target=open_config_dialog, daemon=True).start()),
         pystray.MenuItem("检查助手更新", on_check_helper_update),
+        pystray.MenuItem("导出诊断包", lambda icon, item: export_diagnostics()),
+        pystray.MenuItem("打开发布页", lambda icon, item: open_release_page()),
         pystray.MenuItem("打开日志文件夹", open_log_folder),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("退出", on_quit),

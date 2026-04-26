@@ -20,8 +20,10 @@ from pathlib import Path
 
 from prepare_release import DEFAULT_ENV, ROOT, firmware_url_from_args, run_build
 from release_tools import (
+    helper_version,
     load_manifest,
     project_version,
+    release_notes,
     release_tag_for_version,
     sync_latest_snapshot,
     write_release_bundle,
@@ -172,6 +174,8 @@ def release_body_from_manifest(manifest: dict, notes: str | None) -> str:
     lines.append("Assets:")
     lines.append("- firmware.bin")
     lines.append("- manifest.json")
+    lines.append("- StickS3ClaudeCodexHelper.exe")
+    lines.append("- helper.json")
     return "\n".join(lines)
 
 
@@ -184,6 +188,10 @@ def asset_paths(release_dir: Path) -> list[Path]:
     helper_exe = release_dir / "StickS3ClaudeCodexHelper.exe"
     if helper_exe.exists():
         paths.append(helper_exe)
+        helper_manifest = release_dir / "helper.json"
+        if not helper_manifest.exists():
+            raise FileNotFoundError(helper_manifest)
+        paths.append(helper_manifest)
     return paths
 
 
@@ -235,14 +243,75 @@ def prepare_bundle(args: argparse.Namespace) -> dict:
         raise FileNotFoundError(firmware_path)
 
     version = args.version or project_version(ROOT)
+    notes = args.notes if args.notes is not None else release_notes(ROOT)
     return write_release_bundle(
         firmware_path=firmware_path,
         out_dir=args.out,
         version=version,
         firmware_url=firmware_url_from_args(args),
-        notes=args.notes or "",
+        notes=notes,
         helper_exe=args.helper_exe,
+        helper_version=helper_version(ROOT),
     )
+
+
+def run_checked(cmd: list[str], *, cwd: Path = ROOT) -> None:
+    print("running:", " ".join(cmd))
+    subprocess.run(cmd, cwd=cwd, check=True)
+
+
+def git_output(args: list[str]) -> str:
+    proc = subprocess.run(["git", *args], cwd=ROOT, text=True, capture_output=True, check=True)
+    return proc.stdout.strip()
+
+
+def preflight(args: argparse.Namespace, tag: str) -> None:
+    if not args.allow_dirty:
+        dirty = git_output(["status", "--porcelain", "--untracked-files=no"])
+        if dirty:
+            raise GithubError("tracked worktree changes exist; commit before publishing or pass --allow-dirty")
+
+    run_checked([sys.executable, "helper/version_sync.py", "--check"])
+    run_checked([sys.executable, "-m", "unittest", "discover", "-s", "tests"])
+    run_checked([
+        sys.executable, "-m", "py_compile",
+        "helper/type_server.py",
+        "helper/update_check.py",
+        "helper/publish_release.py",
+        "helper/release_tools.py",
+        "helper/prepare_release.py",
+        "helper/status_logic.py",
+        "helper/version_info.py",
+        "helper/version_sync.py",
+    ])
+    if args.skip_prepare and not args.skip_preflight_build:
+        run_build(args.env)
+
+    if args.helper_exe and not args.helper_exe.exists():
+        raise GithubError(f"helper exe missing: {args.helper_exe}")
+
+    try:
+        tag_sha = git_output(["rev-list", "-n", "1", tag])
+    except subprocess.CalledProcessError:
+        tag_sha = ""
+    if tag_sha:
+        head_sha = git_output(["rev-parse", "HEAD"])
+        if tag_sha != head_sha:
+            raise GithubError(f"tag {tag} points at {tag_sha[:12]}, not HEAD {head_sha[:12]}")
+
+
+def verify_uploaded_assets(auth_header: str, repo: str, tag: str, expected_paths: list[Path]) -> None:
+    release = release_by_tag(auth_header, repo, tag)
+    if not release:
+        raise GithubError(f"release not found after upload: {tag}")
+    assets = {asset.get("name"): asset for asset in release.get("assets") or [] if isinstance(asset, dict)}
+    for path in expected_paths:
+        asset = assets.get(path.name)
+        if not asset:
+            raise GithubError(f"asset missing after upload: {path.name}")
+        if int(asset.get("size") or -1) != path.stat().st_size:
+            raise GithubError(f"asset size mismatch after upload: {path.name}")
+    print("Verified uploaded assets:", ", ".join(path.name for path in expected_paths))
 
 
 def main() -> int:
@@ -264,16 +333,22 @@ def main() -> int:
     parser.add_argument("--prerelease", action="store_true", help="Mark as prerelease.")
     parser.add_argument("--target", help="Target commitish for a new tag/release.")
     parser.add_argument("--no-replace-assets", action="store_true", help="Fail if an asset with the same name exists.")
+    parser.add_argument("--skip-preflight", action="store_true", help="Skip tests/version checks before publishing.")
+    parser.add_argument("--skip-preflight-build", action="store_true", help="Skip preflight release build when using --skip-prepare.")
+    parser.add_argument("--allow-dirty", action="store_true", help="Allow tracked worktree changes during publish.")
     args = parser.parse_args()
+
+    version = args.version or project_version(ROOT)
+    tag = args.tag or release_tag_for_version(version)
+    if not args.skip_preflight:
+        preflight(args, tag)
 
     manifest = prepare_bundle(args)
     if args.sync_latest:
         sync_latest_snapshot(args.out, ROOT / "releases" / "latest")
 
-    version = args.version or str(manifest.get("version") or project_version(ROOT))
-    tag = args.tag or release_tag_for_version(version)
     title = args.title or tag
-    body = release_body_from_manifest(manifest, args.notes)
+    body = release_body_from_manifest(manifest, args.notes if args.notes is not None else release_notes(ROOT))
 
     auth_header = github_auth_header()
     release, created = create_or_update_release(
@@ -289,7 +364,8 @@ def main() -> int:
     action = "created" if created else "updated"
     print(f"Release {action}: {release.get('html_url')}")
 
-    for path in asset_paths(args.out):
+    paths = asset_paths(args.out)
+    for path in paths:
         upload_asset(
             auth_header,
             args.repo,
@@ -298,6 +374,7 @@ def main() -> int:
             replace=not args.no_replace_assets,
         )
         print(f"Uploaded: {path.name} ({path.stat().st_size} bytes)")
+    verify_uploaded_assets(auth_header, args.repo, tag, paths)
     return 0
 
 

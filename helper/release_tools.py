@@ -10,6 +10,16 @@ import shutil
 from pathlib import Path
 
 
+def load_release_config(project_root: Path) -> dict:
+    path = project_root / "release.json"
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("release.json must be a JSON object")
+    return data
+
+
 def read_macro(path: Path, name: str) -> str | None:
     if not path.exists():
         return None
@@ -20,10 +30,26 @@ def read_macro(path: Path, name: str) -> str | None:
 
 
 def project_version(project_root: Path) -> str:
+    value = str(load_release_config(project_root).get("version") or "").strip()
+    if value:
+        return value
     value = read_macro(project_root / "src" / "remote_ota_config.h", "APP_VERSION")
     if value:
         return value
     return "0.0.0"
+
+
+def helper_version(project_root: Path) -> str:
+    cfg = load_release_config(project_root)
+    return str(cfg.get("helper_version") or cfg.get("version") or project_version(project_root)).strip()
+
+
+def release_notes(project_root: Path) -> str:
+    return str(load_release_config(project_root).get("notes") or "").strip()
+
+
+def release_repo(project_root: Path) -> str:
+    return str(load_release_config(project_root).get("repo") or "").strip()
 
 
 def release_tag_for_version(version: str) -> str:
@@ -61,6 +87,24 @@ def build_manifest(version: str, firmware_url: str, firmware_path: Path, notes: 
     return manifest
 
 
+def build_helper_manifest(
+    version: str,
+    helper_url: str,
+    helper_path: Path,
+    notes: str = "",
+) -> dict:
+    manifest = {
+        "version": version,
+        "asset": helper_path.name,
+        "url": helper_url,
+        "sha256": sha256_file(helper_path),
+        "size": helper_path.stat().st_size,
+    }
+    if notes.strip():
+        manifest["notes"] = notes.strip()
+    return manifest
+
+
 def write_release_bundle(
     firmware_path: Path,
     out_dir: Path,
@@ -68,6 +112,7 @@ def write_release_bundle(
     firmware_url: str,
     notes: str = "",
     helper_exe: Path | None = None,
+    helper_version: str | None = None,
 ) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     out_firmware = out_dir / "firmware.bin"
@@ -81,14 +126,27 @@ def write_release_bundle(
 
     if helper_exe and helper_exe.exists():
         shutil.copy2(helper_exe, out_dir / helper_exe.name)
+        helper_url = firmware_url.rsplit("/", 1)[0] + "/" + helper_exe.name
+        helper_manifest = build_helper_manifest(
+            helper_version or version,
+            helper_url,
+            helper_exe,
+            notes,
+        )
+        (out_dir / "helper.json").write_text(
+            json.dumps(helper_manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
     return manifest
 
 
 def sync_latest_snapshot(release_dir: Path, latest_dir: Path) -> None:
     latest_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("firmware.bin", "manifest.json"):
+    for name in ("firmware.bin", "manifest.json", "helper.json"):
         src = release_dir / name
-        if not src.exists():
+        if name != "helper.json" and not src.exists():
             raise FileNotFoundError(src)
+        if not src.exists():
+            continue
         shutil.copy2(src, latest_dir / name)

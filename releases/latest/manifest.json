@@ -1,7 +1,7 @@
 {
-  "version": "0.1.4",
+  "version": "0.2.0",
   "url": "https://github.com/bulb888/StickS3-Claude-Codex-Assistant/releases/latest/download/firmware.bin",
-  "sha256": "3294f1924dc6f079f355f41dcf6bfef1264f7df34fb151bec3028797bbea8e49",
+  "sha256": "6b4b9ca5653f8acd9a6558d852d238bf8589a7dbaf61ad9367f1b884eb7a89ee",
   "size": 2902672,
-  "notes": "PC助手更新入口改名并检查助手exe"
+  "notes": "助手自更新、诊断导出、发布前体检"
 }

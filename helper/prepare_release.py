@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from release_tools import project_version, sync_latest_snapshot, write_release_bundle
+from release_tools import helper_version, project_version, release_notes, sync_latest_snapshot, write_release_bundle
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +37,7 @@ def main() -> int:
     parser.add_argument("--repo", help="GitHub repo in OWNER/REPO form.")
     parser.add_argument("--firmware-url", help="Exact firmware.bin download URL.")
     parser.add_argument("--version", help="Override APP_VERSION.")
-    parser.add_argument("--notes", default="", help="Short release notes stored in manifest.json.")
+    parser.add_argument("--notes", help="Short release notes stored in manifest.json.")
     parser.add_argument("--env", default=DEFAULT_ENV, help="PlatformIO environment to build.")
     parser.add_argument("--no-build", action="store_true", help="Use an existing firmware.bin.")
     parser.add_argument("--firmware", type=Path, help="Existing firmware.bin path when --no-build is used.")
@@ -54,13 +54,15 @@ def main() -> int:
         raise SystemExit(f"找不到固件: {firmware_path}")
 
     version = args.version or project_version(ROOT)
+    notes = args.notes if args.notes is not None else release_notes(ROOT)
     manifest = write_release_bundle(
         firmware_path=firmware_path,
         out_dir=args.out,
         version=version,
         firmware_url=firmware_url_from_args(args),
-        notes=args.notes,
+        notes=notes,
         helper_exe=args.helper_exe,
+        helper_version=helper_version(ROOT),
     )
 
     print(f"Release files: {args.out}")

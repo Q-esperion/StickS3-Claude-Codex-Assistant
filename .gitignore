@@ -39,6 +39,7 @@ releases/*
 !releases/latest/
 !releases/latest/firmware.bin
 !releases/latest/manifest.json
+!releases/latest/helper.json
 !releases/README.md
 
 # Local/vendor reference copies

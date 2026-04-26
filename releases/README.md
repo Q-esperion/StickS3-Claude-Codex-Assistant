@@ -6,6 +6,7 @@ repository:
 ```text
 releases/latest/firmware.bin
 releases/latest/manifest.json
+releases/latest/helper.json
 ```
 
 Long-term distribution and historical binaries belong in GitHub Releases.

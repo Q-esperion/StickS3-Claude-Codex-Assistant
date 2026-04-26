@@ -22,6 +22,7 @@ python helper\prepare_release.py --repo OWNER/REPO --notes "本次更新说明"
 dist/release/
   firmware.bin
   manifest.json
+  helper.json
   StickS3ClaudeCodexHelper.exe   # 如果 helper/dist 下存在，会自动复制
 ```
 
@@ -31,6 +32,7 @@ dist/release/
 releases/latest/
   firmware.bin
   manifest.json
+  helper.json
 ```
 
 `manifest.json` 字段：
@@ -61,6 +63,8 @@ python helper\publish_release.py --repo OWNER/REPO --notes "本次更新说明" 
 
 脚本不会读取 `gh` CLI token，也不会打印或保存 GitHub 凭据。请先确认本机 `git push` 能正常使用 GitHub 凭据。
 
+发布脚本默认会做发布前体检：版本同步检查、Python 单元测试、语法检查、必要时 release 固件构建、helper exe 存在性检查、tag 指向检查、上传后 asset 尺寸校验。
+
 ## 远程 OTA
 
 固件通过 `REMOTE_OTA_MANIFEST_URL` 读取 manifest。用户在 **设置 → 远程 OTA** 检查更新时，版本不同才会下载 `firmware.bin`；下载后按 `size` 和 `sha256` 校验，再写入 OTA 分区。
@@ -69,8 +73,14 @@ python helper\publish_release.py --repo OWNER/REPO --notes "本次更新说明" 
 
 OTA 检查、下载、写入和校验失败会写入 PC 助手的 `stick_log.txt`，用于定位 GitHub asset、网络或校验问题。
 
-PC 助手里的 **检查助手更新** 读取 GitHub latest Release API，查找 `StickS3ClaudeCodexHelper.exe` 资产；它不再检查固件 manifest，避免和板子里的远程 OTA 混淆。
+PC 助手里的 **检查助手更新** 读取 GitHub latest Release API，查找 `StickS3ClaudeCodexHelper.exe` 和 `helper.json`。`helper.json` 记录助手 exe 的版本、大小、SHA256 和下载地址，助手下载后会先校验 SHA256，再替换本机 exe。它不检查固件 manifest，避免和板子里的远程 OTA 混淆。
 
 ## 版本号
 
-固件版本号只维护在 `src/remote_ota_config.h` 的 `APP_VERSION`。`src/secrets.h` 只放私有密钥和 `REMOTE_OTA_MANIFEST_URL`，不要定义 `APP_VERSION`，避免本地编译版本和仓库版本不一致。
+版本源是仓库根目录的 `release.json`。修改版本后运行：
+
+```powershell
+python helper\version_sync.py
+```
+
+脚本会同步 `src/remote_ota_config.h` 和 `helper/version_info.py`。`src/secrets.h` 只放私有密钥和 `REMOTE_OTA_MANIFEST_URL`，不要定义 `APP_VERSION`。

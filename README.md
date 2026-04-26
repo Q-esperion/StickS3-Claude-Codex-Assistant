@@ -94,6 +94,8 @@ python helper\prepare_release.py --repo OWNER/REPO --notes "本次更新说明"
 python helper\publish_release.py --repo OWNER/REPO --notes "本次更新说明" --sync-latest
 ```
 
+版本源在 `release.json`，改版本后运行 `python helper\version_sync.py` 同步固件和助手版本。
+
 ## PC 助手
 
 Claude / Codex 小秘书需要运行 Windows 助手：
@@ -108,7 +110,7 @@ python helper\type_server.py
 StickS3ClaudeCodexHelper.exe
 ```
 
-右下角托盘图标可以打开配置、查看日志、检查助手更新、绑定 Claude/Codex 输入目标。配置窗口里也能查看当前绑定状态，并对 Claude/Codex 分别做测试粘贴。
+右下角托盘图标可以打开配置、查看日志、检查并安装助手更新、导出诊断包、绑定 Claude/Codex 输入目标。配置窗口里也能查看当前绑定状态，并对 Claude/Codex 分别做测试粘贴。
 
 开机自启：
 
@@ -132,7 +134,7 @@ StickS3ClaudeCodexHelper.exe
 - `src/secrets.h` 是本地私有文件，已加入 `.gitignore`
 - 推荐通过 WiFi 配网页保存讯飞 API
 - 远程 OTA 地址也可写在 `src/secrets.h`
-- 固件版本号只改 `src/remote_ota_config.h`，不要在 `src/secrets.h` 里定义 `APP_VERSION`
+- 固件和助手版本统一从 `release.json` 同步，不要在 `src/secrets.h` 里定义 `APP_VERSION`
 
 ## 说明
 

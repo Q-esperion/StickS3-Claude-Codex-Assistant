@@ -153,7 +153,7 @@ PC 助手是 **Windows 托盘程序**，常驻运行两种启动方式：
 - 开发期：`python helper/type_server.py`
 - 打包后：双击 `helper/dist/StickS3ClaudeCodexHelper.exe`（单文件 exe 建议作为 GitHub Release 资产发布；`config.json` 和 `stick_log.txt` 也写在 `dist/` 下，不进临时目录）
 
-托盘右键菜单可打开配置对话框（tkinter），里面能改端口、开关 UDP 发现、设置开机自启（通过 Startup 文件夹放快捷方式）、编辑纠错表、检查助手更新。配置存 `helper/config.json`。助手更新检查读取 GitHub latest Release API 并查找 `StickS3ClaudeCodexHelper.exe`；固件更新仍只在板子 **设置 → 远程 OTA** 里做。
+托盘右键菜单可打开配置对话框（tkinter），里面能改端口、开关 UDP 发现、设置开机自启（通过 Startup 文件夹放快捷方式）、编辑纠错表、检查并安装助手更新、导出诊断包。配置存 `helper/config.json`，带 `config_version` 迁移；旧的可编辑更新地址字段会自动清掉。助手更新检查读取 GitHub latest Release API 并查找 `StickS3ClaudeCodexHelper.exe` + `helper.json`，下载后按 SHA256 校验再替换 exe；固件更新仍只在板子 **设置 → 远程 OTA** 里做。
 
 托盘右键还提供四个输入目标绑定入口：`绑定 Claude 输入目标`、`绑定 Codex 输入目标`、`绑定 Claude 输入框位置`、`绑定 Codex 输入框位置`。窗口绑定会在 3 秒倒计时后抓当前前台窗口；输入框位置绑定会抓鼠标点位，并保存窗口尺寸、相对比例、右侧/底部距离，窗口缩放后会尽量按底部输入框位置重算。绑定成功/失败、清除绑定都会发托盘通知并短暂改托盘标题。当前方案用于 VS Code 内 Codex/Claude 输入框未直接获得焦点时的粘贴稳定性；不要改回单纯“跟随焦点”。
 
@@ -165,7 +165,7 @@ PC 助手是 **Windows 托盘程序**，常驻运行两种启动方式：
 
 常见误识别替换表在 `type_server.py` 的 `CORRECTIONS` 里（如 `克拉克 → Claude`，`cloud code → Claude Code`），托盘里改完保存即可生效，不用重烧板子。
 
-**讯飞 STT 凭据不再硬编码在固件里**。WiFiManager 配网页提供"一键粘贴三项"和单独的 `APPID`、`APISecret`、`APIKey` 输入框，保存到 NVS namespace `xfyun`，键名分别是 `appid` / `secret` / `key`。`xfyun_load_credentials()` 优先读取 NVS；只有 NVS 三项不完整时才使用可选 `src/secrets.h` 默认值。仓库只提供 `src/secrets.example.h` 模板，真实 `src/secrets.h` 已加入 `.gitignore`，开源时不要提交。`APP_VERSION` 只维护在 `src/remote_ota_config.h`，不要放进 `src/secrets.h`。缺任何一项会提示 `请先配讯飞 API`；讯飞握手 `HTTP 401` 会提示 `讯飞鉴权失败 401`，通常是 `APISecret` / `APIKey` 填反或不是同一个 IAT 应用。
+**讯飞 STT 凭据不再硬编码在固件里**。WiFiManager 配网页提供"一键粘贴三项"和单独的 `APPID`、`APISecret`、`APIKey` 输入框，保存到 NVS namespace `xfyun`，键名分别是 `appid` / `secret` / `key`。`xfyun_load_credentials()` 优先读取 NVS；只有 NVS 三项不完整时才使用可选 `src/secrets.h` 默认值。仓库只提供 `src/secrets.example.h` 模板，真实 `src/secrets.h` 已加入 `.gitignore`，开源时不要提交。版本源是 `release.json`，用 `python helper/version_sync.py` 同步 `APP_VERSION` 和助手版本；不要在 `src/secrets.h` 里定义 `APP_VERSION`。缺任何一项会提示 `请先配讯飞 API`；讯飞握手 `HTTP 401` 会提示 `讯飞鉴权失败 401`，通常是 `APISecret` / `APIKey` 填反或不是同一个 IAT 应用。
 
 ## Claude 活动实时显示
 
