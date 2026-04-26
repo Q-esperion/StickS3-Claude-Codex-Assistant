@@ -43,7 +43,7 @@ html_doc = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>StickS3 使用说明</title>
+<title>StickS3 Claude Codex 小秘书使用说明</title>
 <style>{STYLE}</style>
 </head>
 <body>

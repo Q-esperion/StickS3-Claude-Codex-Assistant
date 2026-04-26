@@ -1,8 +1,8 @@
-# StickS3 Desktop System
+# StickS3 Claude Codex 小秘书
 
 Author: 国产电灯泡
 
-一个运行在 M5Stack StickS3 上的口袋桌面系统。
+一个运行在 M5Stack StickS3 上的 Claude / Codex 语音小秘书，也包含仪表盘、红外遥控、网络电台和 OTA。
 
 ## 功能
 
@@ -73,7 +73,7 @@ python helper\type_server.py
 不想装 Python 的用户，可以从 GitHub Release 下载打包版：
 
 ```text
-StickS3Helper.exe
+StickS3ClaudeCodexHelper.exe
 ```
 
 右下角托盘图标可以打开配置、查看日志、绑定 Claude/Codex 输入目标。

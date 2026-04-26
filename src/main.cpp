@@ -311,10 +311,10 @@ void setup() {
   g_canvas.setTextColor(CLR_ACCENT, CLR_BG);
   g_canvas.setFont(&fonts::efontCN_24);
   g_canvas.setTextDatum(middle_center);
-  g_canvas.drawString("StickS3 桌面", SCR_W / 2, SCR_H / 2 - 10);
+  g_canvas.drawString("Claude / Codex", SCR_W / 2, SCR_H / 2 - 18);
   g_canvas.setFont(&fonts::efontCN_16);
   g_canvas.setTextColor(CLR_DIM, CLR_BG);
-  g_canvas.drawString("启动中...", SCR_W / 2, SCR_H / 2 + 16);
+  g_canvas.drawString("StickS3 小秘书", SCR_W / 2, SCR_H / 2 + 10);
   g_canvas.setTextDatum(top_left);
   push_frame();
 

@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='StickS3Helper',
+    name='StickS3ClaudeCodexHelper',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

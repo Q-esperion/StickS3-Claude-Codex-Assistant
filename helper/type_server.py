@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-StickS3 Voice Keyboard Helper (Windows tray app)
+StickS3 Claude Codex Helper (Windows tray app)
 
 Runs in the Windows system tray. Responsibilities:
 
@@ -57,13 +57,13 @@ if os.name == "nt":
     _kernel32.CreateMutexW.restype = wintypes.HANDLE
     ctypes.set_last_error(0)
     _SINGLE_INSTANCE_MUTEX = _kernel32.CreateMutexW(
-        None, False, "Local\\StickS3Helper.SingleInstance"
+        None, False, "Local\\StickS3ClaudeCodexHelper.SingleInstance"
     )
     if _SINGLE_INSTANCE_MUTEX and ctypes.get_last_error() == 183:
         # Do not exit here. A stale helper/dev Python process can hold this
         # mutex even after the HTTP server is gone. The real single-instance
         # guard is the port bind in main().
-        print("[warn] StickS3Helper mutex already exists; checking HTTP port.")
+        print("[warn] StickS3ClaudeCodexHelper mutex already exists; checking HTTP port.")
 
 # ==========================================================================
 # Config
@@ -888,7 +888,7 @@ def local_ip() -> str:
 # ==========================================================================
 STARTUP_SHORTCUT = os.path.join(
     os.environ.get("APPDATA", ""),
-    r"Microsoft\Windows\Start Menu\Programs\Startup\StickS3 Helper.lnk",
+    r"Microsoft\Windows\Start Menu\Programs\Startup\StickS3 Claude Codex 小秘书.lnk",
 )
 
 
@@ -941,7 +941,7 @@ def open_config_dialog():
         return
 
     root = tk.Tk()
-    root.title("StickS3 助手 · 配置")
+    root.title("StickS3 小秘书 · 配置")
     root.geometry("480x520")
     root.resizable(False, False)
 
@@ -1023,7 +1023,7 @@ def open_log_folder(icon=None, item=None):
 
 
 def _tray_base_title():
-    return f"StickS3 Helper - {local_ip()}:{CONFIG['http_port']}"
+    return f"StickS3 小秘书 - {local_ip()}:{CONFIG['http_port']}"
 
 
 def show_tray_feedback(icon, title, message, restore_after=3.0):
@@ -1061,7 +1061,7 @@ def on_bind_target(icon=None, item=None, config_key="target_window", label="Clau
             except Exception: pass
             time.sleep(1)
         info = capture_current_window()
-        try: icon.title = f"StickS3 助手 — {local_ip()}:{CONFIG['http_port']}"
+        try: icon.title = f"StickS3 小秘书 — {local_ip()}:{CONFIG['http_port']}"
         except Exception: pass
         if not info:
             print("[bind] no foreground window captured")
@@ -1106,7 +1106,7 @@ def on_bind_click(icon=None, item=None, config_key="target_window", click_key="t
             except Exception: pass
             time.sleep(1)
         pos = capture_click_position(config_key)
-        try: icon.title = f"StickS3 助手 — {local_ip()}:{CONFIG['http_port']}"
+        try: icon.title = f"StickS3 小秘书 — {local_ip()}:{CONFIG['http_port']}"
         except Exception: pass
         if not pos:
             print(f"[bind:{label}] input click position capture failed")
@@ -1183,7 +1183,7 @@ def start_tray():
         return
 
     ip = local_ip()
-    title = f"StickS3 助手 — {ip}:{CONFIG['http_port']}"
+    title = f"StickS3 小秘书 — {ip}:{CONFIG['http_port']}"
 
     def target_status(config_key="target_window", label="Claude"):
         tgt = CONFIG.get(config_key)
@@ -1223,7 +1223,7 @@ def start_tray():
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("退出", on_quit),
     )
-    icon = pystray.Icon("StickS3Helper", make_icon_image(), title, menu)
+    icon = pystray.Icon("StickS3ClaudeCodexHelper", make_icon_image(), title, menu)
     icon.run()
 
 
@@ -1233,7 +1233,7 @@ def start_tray():
 def main():
     ip = local_ip()
     print("=" * 60)
-    print(f"  StickS3 Voice Keyboard Helper")
+    print(f"  StickS3 Claude Codex Helper")
     print(f"  HTTP :{CONFIG['http_port']}   UDP discovery :{CONFIG['udp_port']}")
     print(f"  LAN IP: {ip}")
     print(f"  Log:    {LOG_FILE}")

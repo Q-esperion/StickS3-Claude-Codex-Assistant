@@ -1,6 +1,6 @@
-# StickS3 桌面系统 — 开发备忘
+# StickS3 Claude Codex 小秘书 — 开发备忘
 
-M5Stack StickS3（ESP32-S3-PICO-1-N8R8，8MB Flash + 8MB PSRAM，1.14" LCD 135x240）上的多应用桌面系统。用 PlatformIO + Arduino 框架开发。
+M5Stack StickS3（ESP32-S3-PICO-1-N8R8，8MB Flash + 8MB PSRAM，1.14" LCD 135x240）上的 Claude / Codex 语音小秘书，也包含仪表盘、红外、电台和 OTA。用 PlatformIO + Arduino 框架开发。
 
 ## 工程结构
 
@@ -145,7 +145,7 @@ apply_volume();
 
 PC 助手是 **Windows 托盘程序**，常驻运行两种启动方式：
 - 开发期：`python helper/type_server.py`
-- 打包后：双击 `helper/dist/StickS3Helper.exe`（单文件 exe 建议作为 GitHub Release 资产发布；`config.json` 和 `stick_log.txt` 也写在 `dist/` 下，不进临时目录）
+- 打包后：双击 `helper/dist/StickS3ClaudeCodexHelper.exe`（单文件 exe 建议作为 GitHub Release 资产发布；`config.json` 和 `stick_log.txt` 也写在 `dist/` 下，不进临时目录）
 
 托盘右键菜单可打开配置对话框（tkinter），里面能改端口、开关 UDP 发现、设置开机自启（通过 Startup 文件夹放快捷方式）、编辑纠错表。配置存 `helper/config.json`。
 
