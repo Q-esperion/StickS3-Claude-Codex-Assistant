@@ -82,6 +82,12 @@ void maybe_auto_rotate() {
 
 static int s_cursor = 0;  // 0=volume 1=brightness 2=rotate 3=screen-timeout 4=wifi 5=remote-ota 6=clear-net
 static const int N_ROWS = 7;
+static const int PAGE_SIZE = 4;
+static const int N_PAGES = (N_ROWS + PAGE_SIZE - 1) / PAGE_SIZE;
+
+static const char* const SETTINGS_LABELS[N_ROWS] = {
+  "音量", "亮度", "自动旋转", "自动熄屏", "WiFi 配网", "远程 OTA", "清除配网"
+};
 
 static const int TIMEOUT_STEPS[] = { 0, 15, 30, 60, 120, 300 };
 static const int N_TIMEOUT_STEPS = sizeof(TIMEOUT_STEPS) / sizeof(TIMEOUT_STEPS[0]);
@@ -99,30 +105,38 @@ static void drawUI() {
   g_canvas.setTextDatum(middle_left);
   g_canvas.drawString(String("v") + APP_VERSION, 64, 12);
 
-  int row_h = 16;
-  int start_y = 22;
+  int page = s_cursor / PAGE_SIZE;
+  int first = page * PAGE_SIZE;
+  int last = first + PAGE_SIZE;
+  if (last > N_ROWS) last = N_ROWS;
 
-  const char* labels[N_ROWS] = {"音量", "亮度", "自动旋转", "自动熄屏", "WiFi 配网", "远程 OTA", "清除配网"};
+  char page_buf[8];
+  snprintf(page_buf, sizeof(page_buf), "%d/%d", page + 1, N_PAGES);
+  g_canvas.setTextDatum(middle_right);
+  g_canvas.drawString(page_buf, SCR_W - 74, 12);
 
-  for (int i = 0; i < N_ROWS; i++) {
-    int y = start_y + i * row_h;
+  int row_h = 23;
+  int start_y = 28;
+
+  for (int i = first; i < last; i++) {
+    int y = start_y + (i - first) * row_h;
     bool sel = (i == s_cursor);
     uint32_t label_color = sel ? CLR_ACCENT : CLR_TEXT;
 
     g_canvas.setFont(&fonts::efontCN_14);
     g_canvas.setTextColor(label_color, CLR_BG);
     g_canvas.setTextDatum(middle_left);
-    g_canvas.drawString(labels[i], 8, y + 7);
+    g_canvas.drawString(SETTINGS_LABELS[i], 8, y + 8);
 
     if (i < 2) {
       int v = (i == 0) ? s_volume : s_brightness;
       int maxv = 10;
       char vbuf[8]; snprintf(vbuf, sizeof(vbuf), "%d", v);
       g_canvas.setTextDatum(middle_right);
-      g_canvas.drawString(vbuf, SCR_W - 8, y + 7);
+      g_canvas.drawString(vbuf, SCR_W - 8, y + 8);
 
       int bar_x = 8;
-      int bar_y = y + 13;
+      int bar_y = y + 16;
       int bar_w = SCR_W - 16;
       int bar_h = 4;
       g_canvas.drawRoundRect(bar_x, bar_y, bar_w, bar_h, 2, CLR_DIM);
@@ -133,7 +147,7 @@ static void drawUI() {
       g_canvas.setTextDatum(middle_right);
       const char* v = s_auto_rotate ? "开" : "关";
       g_canvas.setTextColor(s_auto_rotate ? CLR_GOOD : CLR_DIM, CLR_BG);
-      g_canvas.drawString(v, SCR_W - 8, y + 7);
+      g_canvas.drawString(v, SCR_W - 8, y + 8);
     } else if (i == 3) {
       g_canvas.setTextDatum(middle_right);
       char buf[16];
@@ -141,24 +155,29 @@ static void drawUI() {
       else if (s_screen_timeout < 60) snprintf(buf, sizeof(buf), "%d 秒", s_screen_timeout);
       else snprintf(buf, sizeof(buf), "%d 分", s_screen_timeout / 60);
       g_canvas.setTextColor(s_screen_timeout == 0 ? CLR_DIM : CLR_GOOD, CLR_BG);
-      g_canvas.drawString(buf, SCR_W - 8, y + 7);
+      g_canvas.drawString(buf, SCR_W - 8, y + 8);
     } else if (i == 4) {
       // WiFi 配网 — action row, B press triggers portal.
       g_canvas.setTextDatum(middle_right);
       g_canvas.setTextColor(sel ? CLR_ACCENT : CLR_DIM, CLR_BG);
-      g_canvas.drawString("点 B 开始", SCR_W - 8, y + 7);
+      g_canvas.drawString("点 B 开始", SCR_W - 8, y + 8);
     } else if (i == 5) {
       // Remote OTA — fetches a GitHub Release manifest if configured.
       g_canvas.setTextDatum(middle_right);
       g_canvas.setTextColor(sel ? CLR_ACCENT2 : CLR_DIM, CLR_BG);
-      g_canvas.drawString("点 B 检查", SCR_W - 8, y + 7);
+      g_canvas.drawString("点 B 检查", SCR_W - 8, y + 8);
     } else {
       // 清除配网 — clears WiFi, site, and iFlytek credentials, then restarts.
       g_canvas.setTextDatum(middle_right);
       g_canvas.setTextColor(sel ? CLR_WARN : CLR_DIM, CLR_BG);
-      g_canvas.drawString("点 B 重置", SCR_W - 8, y + 7);
+      g_canvas.drawString("点 B 重置", SCR_W - 8, y + 8);
     }
   }
+
+  g_canvas.setFont(&fonts::efontCN_12);
+  g_canvas.setTextColor(CLR_DIM, CLR_BG);
+  g_canvas.setTextDatum(bottom_center);
+  g_canvas.drawString("A 下一项    B 修改    长按 B 返回", SCR_W / 2, SCR_H - 4);
 
   g_canvas.setTextDatum(top_left);
   push_frame();
