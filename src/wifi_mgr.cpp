@@ -3,11 +3,15 @@
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <Preferences.h>
+#include <esp_wifi.h>
+#include <cstring>
 #include <time.h>
 #include <vector>
 
 static bool s_connected = false;
 static String s_ssid;
+static bool s_wifi_events_registered = false;
+static bool s_time_sync_started = false;
 
 // Injected into every WiFiManager portal page's <head>. On DOM load it walks
 // text nodes + placeholders/labels and substitutes Chinese for the English
@@ -84,8 +88,55 @@ static void drawPortalScreen() {
   push_frame();
 }
 
+static bool hasStoredWiFiCredentials() {
+  wifi_config_t conf;
+  memset(&conf, 0, sizeof(conf));
+  if (esp_wifi_get_config(WIFI_IF_STA, &conf) != ESP_OK) return false;
+  return conf.sta.ssid[0] != 0;
+}
+
+static void startTimeSyncOnce() {
+  if (s_time_sync_started) return;
+  configTzTime("CST-8", "ntp.aliyun.com", "ntp.ntsc.ac.cn", "pool.ntp.org");
+  s_time_sync_started = true;
+}
+
+static void updateConnectedState() {
+  s_connected = (WiFi.status() == WL_CONNECTED);
+  s_ssid = s_connected ? WiFi.SSID() : "";
+  if (s_connected) startTimeSyncOnce();
+}
+
+static void registerWiFiEventsOnce() {
+  if (s_wifi_events_registered) return;
+  s_wifi_events_registered = true;
+  WiFi.onEvent([](WiFiEvent_t ev, WiFiEventInfo_t info) {
+    if (ev == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+      updateConnectedState();
+    } else if (ev == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+      s_connected = false;
+      s_ssid = "";
+      WiFi.reconnect();
+    }
+  });
+}
+
+static void enableWiFiRuntime() {
+  registerWiFiEventsOnce();
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(true);
+  updateConnectedState();
+}
+
 void wifi_setup(bool force_portal) {
   WiFi.mode(WIFI_STA);
+  if (!force_portal && hasStoredWiFiCredentials()) {
+    enableWiFiRuntime();
+    WiFi.begin();
+    stick_log("info", "wifi connecting in background");
+    return;
+  }
+
   WiFiManager wm;
   wm.setDebugOutput(false);
   wm.setConnectTimeout(15);
@@ -201,22 +252,7 @@ void wifi_setup(bool force_portal) {
   savePortalParams();
 
   if (s_connected) {
-    // Kick off NTP time sync globally so apps that need signed timestamps
-    // (e.g. voice keyboard → iFlytek) have valid time.
-    configTzTime("CST-8", "ntp.aliyun.com", "ntp.ntsc.ac.cn", "pool.ntp.org");
-
-    // Keep the radio alive across transient drops (AP reboots, weak signal).
-    // setAutoReconnect makes the Arduino core retry in the background; our
-    // own event handler nudges it faster and logs each recovery.
-    WiFi.setAutoReconnect(true);
-    WiFi.persistent(true);
-    WiFi.onEvent([](WiFiEvent_t ev, WiFiEventInfo_t info) {
-      if (ev == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-        WiFi.reconnect();
-      }
-    });
-
-    s_ssid = WiFi.SSID();
+    enableWiFiRuntime();
     if (portal_params_saved) {
       String xf_appid, xf_key, xf_secret;
       bool xf_ok = xfyun_load_credentials(xf_appid, xf_key, xf_secret);

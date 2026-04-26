@@ -8,6 +8,15 @@ Author: 国产电灯泡
   <img src="docs/images/m5stack-sticks3.webp" alt="M5Stack StickS3" width="640">
 </p>
 
+## 界面预览
+
+<p align="center">
+  <img src="docs/images/ui-boot.svg" alt="开机动画" width="240">
+  <img src="docs/images/ui-menu.svg" alt="主菜单" width="240">
+  <img src="docs/images/ui-assistant.svg" alt="小秘书界面" width="240">
+  <img src="docs/images/ui-remote-ota.svg" alt="远程 OTA" width="240">
+</p>
+
 ## 功能
 
 - Claude / Codex 小秘书：语音输入到电脑端，并显示实时状态
@@ -81,6 +90,11 @@ StickS3ClaudeCodexHelper.exe
 ```
 
 右下角托盘图标可以打开配置、查看日志、绑定 Claude/Codex 输入目标。
+
+开机自启：
+
+- 下载版：右键托盘图标 → **打开配置** → 打开 **开机自启**
+- 手动版：按 `Win + R`，输入 `shell:startup`，把助手 exe 的快捷方式放进去
 
 推荐用法：
 

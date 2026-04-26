@@ -178,19 +178,29 @@ static void drawRemoteOTAScreen(const char* title, const char* detail, int progr
   g_canvas.fillScreen(CLR_BG);
   draw_title("远程 OTA");
 
-  draw_claude_mascot(SCR_W / 2, 42, 12, CLR_ACCENT2);
+  draw_claude_mascot(SCR_W / 2, 38, 11, CLR_ACCENT2);
 
   g_canvas.setTextDatum(middle_center);
   g_canvas.setFont(&fonts::efontCN_16);
   g_canvas.setTextColor(progress < -1 ? CLR_BAD : CLR_TEXT, CLR_BG);
-  g_canvas.drawString(title, SCR_W / 2, 70);
+  g_canvas.drawString(title, SCR_W / 2, 66);
 
   g_canvas.setFont(&fonts::efontCN_12);
   g_canvas.setTextColor(CLR_DIM, CLR_BG);
-  if (detail && *detail) g_canvas.drawString(detail, SCR_W / 2, 88);
+  int detail_y = 86;
+  if (detail && *detail) {
+    String d(detail);
+    int nl = d.indexOf('\n');
+    if (nl >= 0) {
+      g_canvas.drawString(d.substring(0, nl), SCR_W / 2, detail_y);
+      g_canvas.drawString(d.substring(nl + 1), SCR_W / 2, detail_y + 14);
+    } else {
+      g_canvas.drawString(d, SCR_W / 2, detail_y);
+    }
+  }
 
   if (progress >= 0) {
-    int pbx = 20, pby = 104, pbw = SCR_W - 40, pbh = 8;
+    int pbx = 20, pby = 108, pbw = SCR_W - 40, pbh = 8;
     g_canvas.drawRoundRect(pbx - 1, pby - 1, pbw + 2, pbh + 2, 2, CLR_DIM);
     int fill = pbw * progress / 100;
     g_canvas.fillRoundRect(pbx, pby, fill, pbh, 2, CLR_ACCENT2);
@@ -200,6 +210,17 @@ static void drawRemoteOTAScreen(const char* title, const char* detail, int progr
 
   g_canvas.setTextDatum(top_left);
   push_frame();
+}
+
+static void formatBytes(uint32_t bytes, char* out, size_t out_len) {
+  if (bytes >= 1024UL * 1024UL) {
+    float mb = (float)bytes / (1024.0f * 1024.0f);
+    snprintf(out, out_len, "%.1f MB", mb);
+  } else if (bytes >= 1024UL) {
+    snprintf(out, out_len, "%lu KB", (unsigned long)(bytes / 1024UL));
+  } else {
+    snprintf(out, out_len, "%lu B", (unsigned long)bytes);
+  }
 }
 
 static String sha256Hex(const uint8_t hash[32]) {
@@ -406,7 +427,7 @@ void app_remote_ota_run() {
     return;
   }
 
-  char detail[48];
+  char detail[64];
   snprintf(detail, sizeof(detail), "当前版本 %s", APP_VERSION);
   drawRemoteOTAScreen("检查远程更新", detail, -1);
 
@@ -441,14 +462,25 @@ void app_remote_ota_run() {
       }
 
       if (manifest.version.length() > 0 && manifest.version == APP_VERSION) {
-        drawRemoteOTAScreen("已经是最新版", manifest.version.c_str(), -1);
+        char same[64];
+        snprintf(same, sizeof(same), "当前/最新 %s", manifest.version.c_str());
+        drawRemoteOTAScreen("已经是最新版", same, -1);
         delay(1800);
         M5.Speaker.begin();
         apply_volume();
         return;
       }
 
-      char ver[48];
+      char size_buf[20];
+      formatBytes(manifest.size, size_buf, sizeof(size_buf));
+      char found[80];
+      snprintf(found, sizeof(found), "当前 %s  最新 %s\n固件大小 %s", APP_VERSION,
+               manifest.version.length() ? manifest.version.c_str() : "new",
+               size_buf);
+      drawRemoteOTAScreen("发现新版本", found, -1);
+      delay(900);
+
+      char ver[64];
       snprintf(ver, sizeof(ver), "%s -> %s", APP_VERSION,
                manifest.version.length() ? manifest.version.c_str() : "new");
       drawRemoteOTAScreen("准备升级", ver, 0);
