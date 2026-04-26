@@ -49,7 +49,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
 from status_logic import clean_text, codex_phase_for_text
-from update_check import DEFAULT_MANIFEST_URL, fetch_manifest, format_update_summary
+from update_check import DEFAULT_RELEASE_API_URL, fetch_latest_release, format_helper_update_summary
 
 # Avoid duplicate tray helpers. A second instance cannot bind the ports anyway,
 # and two tray icons make it hard to know which config/log is active.
@@ -82,13 +82,14 @@ else:
     _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(_THIS_DIR, "config.json")
 LOG_FILE    = os.path.join(_THIS_DIR, "stick_log.txt")
+HELPER_VERSION = "0.1.4"
 
 DEFAULT_CONFIG = {
     "http_port": 8765,
     "udp_port": 8766,
     "discovery_enabled": True,
     "autostart": False,
-    "firmware_manifest_url": DEFAULT_MANIFEST_URL,
+    "helper_release_api_url": DEFAULT_RELEASE_API_URL,
     "codex_session_watch_enabled": False,
     # When non-null, /type will focus this window before pasting. Captured
     # via tray menu "绑定当前窗口为输入目标". Shape: {"title": "...", "class": "..."}.
@@ -971,9 +972,9 @@ def open_config_dialog():
     udp_var = tk.StringVar(value=str(CONFIG["udp_port"]))
     ttk.Entry(row, textvariable=udp_var, width=10).grid(row=0, column=3, padx=6)
 
-    manifest_var = tk.StringVar(value=CONFIG.get("firmware_manifest_url", DEFAULT_MANIFEST_URL))
-    ttk.Label(frm, text="固件更新地址").pack(anchor="w", pady=(4, 2))
-    ttk.Entry(frm, textvariable=manifest_var).pack(fill="x")
+    release_api_var = tk.StringVar(value=CONFIG.get("helper_release_api_url", DEFAULT_RELEASE_API_URL))
+    ttk.Label(frm, text=f"助手更新地址  当前 v{HELPER_VERSION}").pack(anchor="w", pady=(4, 2))
+    ttk.Entry(frm, textvariable=release_api_var).pack(fill="x")
 
     discovery_var = tk.BooleanVar(value=CONFIG["discovery_enabled"])
     ttk.Checkbutton(frm, text="启用 UDP 自动发现", variable=discovery_var).pack(anchor="w", pady=4)
@@ -1000,27 +1001,27 @@ def open_config_dialog():
 
         threading.Thread(target=do, daemon=True).start()
 
-    def check_firmware_update():
-        url = manifest_var.get().strip()
+    def check_helper_update():
+        url = release_api_var.get().strip()
         if not url:
-            messagebox.showwarning("未配置地址", "请先填写固件更新地址。")
+            messagebox.showwarning("未配置地址", "请先填写助手更新地址。")
             return
 
         def do():
             try:
-                manifest = fetch_manifest(url)
-                summary = format_update_summary(manifest)
+                release = fetch_latest_release(url)
+                summary = format_helper_update_summary(release, HELPER_VERSION)
             except Exception as e:
                 msg = str(e)
                 root.after(0, lambda msg=msg: messagebox.showerror("检查失败", msg))
                 return
-            root.after(0, lambda: messagebox.showinfo("固件更新", summary))
+            root.after(0, lambda: messagebox.showinfo("助手更新", summary))
 
         threading.Thread(target=do, daemon=True).start()
 
     action_row = ttk.Frame(frm); action_row.pack(fill="x", pady=(4, 8))
     ttk.Button(action_row, text="刷新状态", command=refresh_status_labels).pack(side="left")
-    ttk.Button(action_row, text="检查更新", command=check_firmware_update).pack(side="left", padx=6)
+    ttk.Button(action_row, text="检查助手更新", command=check_helper_update).pack(side="left", padx=6)
     ttk.Button(action_row, text="打开日志目录", command=open_log_folder).pack(side="left")
     ttk.Button(action_row, text="测试 Claude", command=lambda: test_target("target_window", "Claude")).pack(side="right")
     ttk.Button(action_row, text="测试 Codex", command=lambda: test_target("codex_target_window", "Codex")).pack(side="right", padx=6)
@@ -1050,7 +1051,7 @@ def open_config_dialog():
             "udp_port": udp_port,
             "discovery_enabled": discovery_var.get(),
             "autostart": autostart_var.get(),
-            "firmware_manifest_url": manifest_var.get().strip() or DEFAULT_MANIFEST_URL,
+            "helper_release_api_url": release_api_var.get().strip() or DEFAULT_RELEASE_API_URL,
             "codex_session_watch_enabled": CONFIG.get("codex_session_watch_enabled", False),
             # Preserve the bound target window across config-dialog saves.
             "target_window": CONFIG.get("target_window"),
@@ -1083,17 +1084,15 @@ def open_log_folder(icon=None, item=None):
         print(f"[warn] open log folder: {e}")
 
 
-def on_check_firmware_update(icon=None, item=None):
+def on_check_helper_update(icon=None, item=None):
     def do():
-        url = CONFIG.get("firmware_manifest_url") or DEFAULT_MANIFEST_URL
+        url = CONFIG.get("helper_release_api_url") or DEFAULT_RELEASE_API_URL
         try:
-            manifest = fetch_manifest(url)
-            version = str(manifest.get("version") or "未知版本")
-            notes = str(manifest.get("notes") or "").strip()
-            message = f"最新固件 {version}"
-            if notes:
-                message = f"{message}: {notes[:60]}"
-            show_tray_feedback(icon, "固件更新", message, restore_after=8.0)
+            release = fetch_latest_release(url)
+            latest = str(release.get("tag_name") or release.get("name") or "未知版本")
+            summary = format_helper_update_summary(release, HELPER_VERSION).splitlines()
+            status = next((line.replace("状态: ", "") for line in summary if line.startswith("状态: ")), "")
+            show_tray_feedback(icon, "助手更新", f"当前 v{HELPER_VERSION} / 最新 {latest} {status}".strip(), restore_after=8.0)
         except Exception as e:
             show_tray_feedback(icon, "检查更新失败", str(e)[:80], restore_after=8.0)
 
@@ -1287,7 +1286,7 @@ def start_tray():
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("打开配置", lambda icon, item: threading.Thread(
             target=open_config_dialog, daemon=True).start()),
-        pystray.MenuItem("检查固件更新", on_check_firmware_update),
+        pystray.MenuItem("检查助手更新", on_check_helper_update),
         pystray.MenuItem("打开日志文件夹", open_log_folder),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("退出", on_quit),

@@ -21,7 +21,7 @@ from release_tools import (
     write_release_bundle,
 )
 from status_logic import clean_text, codex_phase_for_text
-from update_check import format_size, format_update_summary
+from update_check import format_helper_update_summary, format_size, is_newer_version
 
 
 @contextlib.contextmanager
@@ -99,14 +99,26 @@ class UpdateCheckTest(unittest.TestCase):
         self.assertEqual(format_size(1024), "1 KB")
         self.assertEqual(format_size(2 * 1024 * 1024), "2.0 MB")
 
-    def test_format_update_summary(self):
-        summary = format_update_summary({
-            "version": "1.2.3",
-            "size": 2048,
-            "notes": "hello",
-            "url": "https://example.com/fw.bin",
-        })
-        self.assertIn("最新固件: 1.2.3", summary)
+    def test_is_newer_version(self):
+        self.assertIs(is_newer_version("1.2.4", "1.2.3"), True)
+        self.assertIs(is_newer_version("1.2.3", "1.2.3"), False)
+
+    def test_format_helper_update_summary(self):
+        summary = format_helper_update_summary(
+            {
+                "tag_name": "v1.2.3",
+                "body": "hello\n\nAssets:",
+                "assets": [{
+                    "name": "StickS3ClaudeCodexHelper.exe",
+                    "size": 2048,
+                    "browser_download_url": "https://example.com/helper.exe",
+                }],
+            },
+            "1.2.2",
+        )
+        self.assertIn("当前助手: 1.2.2", summary)
+        self.assertIn("最新助手: 1.2.3", summary)
+        self.assertIn("状态: 发现新版", summary)
         self.assertIn("大小: 2 KB", summary)
         self.assertIn("说明: hello", summary)
 

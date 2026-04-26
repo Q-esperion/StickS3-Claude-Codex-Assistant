@@ -153,7 +153,7 @@ PC 助手是 **Windows 托盘程序**，常驻运行两种启动方式：
 - 开发期：`python helper/type_server.py`
 - 打包后：双击 `helper/dist/StickS3ClaudeCodexHelper.exe`（单文件 exe 建议作为 GitHub Release 资产发布；`config.json` 和 `stick_log.txt` 也写在 `dist/` 下，不进临时目录）
 
-托盘右键菜单可打开配置对话框（tkinter），里面能改端口、开关 UDP 发现、设置开机自启（通过 Startup 文件夹放快捷方式）、编辑纠错表。配置存 `helper/config.json`。
+托盘右键菜单可打开配置对话框（tkinter），里面能改端口、开关 UDP 发现、设置开机自启（通过 Startup 文件夹放快捷方式）、编辑纠错表、检查助手更新。配置存 `helper/config.json`。助手更新检查读取 GitHub latest Release API 并查找 `StickS3ClaudeCodexHelper.exe`；固件更新仍只在板子 **设置 → 远程 OTA** 里做。
 
 托盘右键还提供四个输入目标绑定入口：`绑定 Claude 输入目标`、`绑定 Codex 输入目标`、`绑定 Claude 输入框位置`、`绑定 Codex 输入框位置`。窗口绑定会在 3 秒倒计时后抓当前前台窗口；输入框位置绑定会抓鼠标点位，并保存窗口尺寸、相对比例、右侧/底部距离，窗口缩放后会尽量按底部输入框位置重算。绑定成功/失败、清除绑定都会发托盘通知并短暂改托盘标题。当前方案用于 VS Code 内 Codex/Claude 输入框未直接获得焦点时的粘贴稳定性；不要改回单纯“跟随焦点”。
 

@@ -9,7 +9,7 @@
 #ifdef APP_VERSION
 #undef APP_VERSION
 #endif
-#define APP_VERSION "0.1.3"
+#define APP_VERSION "0.1.4"
 
 #ifndef REMOTE_OTA_MANIFEST_URL
 #define REMOTE_OTA_MANIFEST_URL ""

@@ -69,6 +69,8 @@ python helper\publish_release.py --repo OWNER/REPO --notes "本次更新说明" 
 
 OTA 检查、下载、写入和校验失败会写入 PC 助手的 `stick_log.txt`，用于定位 GitHub asset、网络或校验问题。
 
+PC 助手里的 **检查助手更新** 读取 GitHub latest Release API，查找 `StickS3ClaudeCodexHelper.exe` 资产；它不再检查固件 manifest，避免和板子里的远程 OTA 混淆。
+
 ## 版本号
 
 固件版本号只维护在 `src/remote_ota_config.h` 的 `APP_VERSION`。`src/secrets.h` 只放私有密钥和 `REMOTE_OTA_MANIFEST_URL`，不要定义 `APP_VERSION`，避免本地编译版本和仓库版本不一致。

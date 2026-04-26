@@ -108,7 +108,7 @@ python helper\type_server.py
 StickS3ClaudeCodexHelper.exe
 ```
 
-右下角托盘图标可以打开配置、查看日志、检查固件更新、绑定 Claude/Codex 输入目标。配置窗口里也能查看当前绑定状态，并对 Claude/Codex 分别做测试粘贴。
+右下角托盘图标可以打开配置、查看日志、检查助手更新、绑定 Claude/Codex 输入目标。配置窗口里也能查看当前绑定状态，并对 Claude/Codex 分别做测试粘贴。
 
 开机自启：
 
