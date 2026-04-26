@@ -85,13 +85,6 @@ static void drawPortalScreen() {
 }
 
 void wifi_setup(bool force_portal) {
-  g_canvas.fillScreen(CLR_BG);
-  draw_title("WiFi");
-  g_canvas.setFont(&fonts::efontCN_16);
-  g_canvas.setTextColor(CLR_TEXT, CLR_BG);
-  g_canvas.setCursor(6, 32); g_canvas.print("正在连接...");
-  push_frame();
-
   WiFi.mode(WIFI_STA);
   WiFiManager wm;
   wm.setDebugOutput(false);
@@ -207,9 +200,6 @@ void wifi_setup(bool force_portal) {
   // the defaults we seeded — writing them back is a no-op.
   savePortalParams();
 
-  g_canvas.fillScreen(CLR_BG);
-  draw_title("WiFi");
-  g_canvas.setFont(&fonts::efontCN_16);
   if (s_connected) {
     // Kick off NTP time sync globally so apps that need signed timestamps
     // (e.g. voice keyboard → iFlytek) have valid time.
@@ -236,21 +226,31 @@ void wifi_setup(bool force_portal) {
                          + " key_len=" + xf_key.length()
                          + " secret_len=" + xf_secret.length());
     }
-    g_canvas.setTextColor(CLR_GOOD, CLR_BG);
-    g_canvas.setCursor(6, 32); g_canvas.print("已连接:");
-    g_canvas.setTextColor(CLR_TEXT, CLR_BG);
-    g_canvas.setCursor(6, 52); g_canvas.print(s_ssid);
-    g_canvas.setCursor(6, 72); g_canvas.print(WiFi.localIP().toString());
+    if (force_portal) {
+      g_canvas.fillScreen(CLR_BG);
+      draw_title("WiFi");
+      g_canvas.setFont(&fonts::efontCN_16);
+      g_canvas.setTextColor(CLR_GOOD, CLR_BG);
+      g_canvas.setCursor(6, 32); g_canvas.print("已连接:");
+      g_canvas.setTextColor(CLR_TEXT, CLR_BG);
+      g_canvas.setCursor(6, 52); g_canvas.print(s_ssid);
+      g_canvas.setCursor(6, 72); g_canvas.print(WiFi.localIP().toString());
+      push_frame();
+      delay(900);
+    }
   } else {
     s_ssid = "";
+    g_canvas.fillScreen(CLR_BG);
+    draw_title("WiFi");
+    g_canvas.setFont(&fonts::efontCN_16);
     g_canvas.setTextColor(CLR_WARN, CLR_BG);
     g_canvas.setCursor(6, 32); g_canvas.print("离线模式");
     g_canvas.setFont(&fonts::efontCN_14);
     g_canvas.setTextColor(CLR_DIM, CLR_BG);
     g_canvas.setCursor(6, 56); g_canvas.print("稍后可在桌面重试");
+    push_frame();
+    delay(1200);
   }
-  push_frame();
-  delay(1200);
 }
 
 bool wifi_is_connected() { return WiFi.status() == WL_CONNECTED; }
