@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from release_tools import project_version, write_release_bundle
+from release_tools import project_version, sync_latest_snapshot, write_release_bundle
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +43,7 @@ def main() -> int:
     parser.add_argument("--firmware", type=Path, help="Existing firmware.bin path when --no-build is used.")
     parser.add_argument("--out", type=Path, default=ROOT / "dist" / "release")
     parser.add_argument("--helper-exe", type=Path, default=ROOT / "helper" / "dist" / "StickS3ClaudeCodexHelper.exe")
+    parser.add_argument("--sync-latest", action="store_true", help="Copy firmware.bin and manifest.json to releases/latest.")
     args = parser.parse_args()
 
     if not args.no_build:
@@ -66,6 +67,10 @@ def main() -> int:
     print(f"firmware.bin  {manifest['size']} bytes")
     print(f"sha256        {manifest['sha256']}")
     print(f"version       {manifest['version']}")
+    if args.sync_latest:
+        latest_dir = ROOT / "releases" / "latest"
+        sync_latest_snapshot(args.out, latest_dir)
+        print(f"synced        {latest_dir}")
     return 0
 
 

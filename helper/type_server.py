@@ -49,6 +49,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
 from status_logic import clean_text, codex_phase_for_text
+from update_check import DEFAULT_MANIFEST_URL, fetch_manifest, format_update_summary
 
 # Avoid duplicate tray helpers. A second instance cannot bind the ports anyway,
 # and two tray icons make it hard to know which config/log is active.
@@ -87,6 +88,7 @@ DEFAULT_CONFIG = {
     "udp_port": 8766,
     "discovery_enabled": True,
     "autostart": False,
+    "firmware_manifest_url": DEFAULT_MANIFEST_URL,
     "codex_session_watch_enabled": False,
     # When non-null, /type will focus this window before pasting. Captured
     # via tray menu "绑定当前窗口为输入目标". Shape: {"title": "...", "class": "..."}.
@@ -947,7 +949,7 @@ def open_config_dialog():
 
     root = tk.Tk()
     root.title("StickS3 小秘书 · 配置")
-    root.geometry("500x610")
+    root.geometry("560x680")
     root.resizable(False, False)
 
     frm = ttk.Frame(root, padding=12)
@@ -968,6 +970,10 @@ def open_config_dialog():
     ttk.Label(row, text="UDP 发现端口").grid(row=0, column=2, sticky="w", padx=(12, 0))
     udp_var = tk.StringVar(value=str(CONFIG["udp_port"]))
     ttk.Entry(row, textvariable=udp_var, width=10).grid(row=0, column=3, padx=6)
+
+    manifest_var = tk.StringVar(value=CONFIG.get("firmware_manifest_url", DEFAULT_MANIFEST_URL))
+    ttk.Label(frm, text="固件更新地址").pack(anchor="w", pady=(4, 2))
+    ttk.Entry(frm, textvariable=manifest_var).pack(fill="x")
 
     discovery_var = tk.BooleanVar(value=CONFIG["discovery_enabled"])
     ttk.Checkbutton(frm, text="启用 UDP 自动发现", variable=discovery_var).pack(anchor="w", pady=4)
@@ -994,9 +1000,28 @@ def open_config_dialog():
 
         threading.Thread(target=do, daemon=True).start()
 
+    def check_firmware_update():
+        url = manifest_var.get().strip()
+        if not url:
+            messagebox.showwarning("未配置地址", "请先填写固件更新地址。")
+            return
+
+        def do():
+            try:
+                manifest = fetch_manifest(url)
+                summary = format_update_summary(manifest)
+            except Exception as e:
+                msg = str(e)
+                root.after(0, lambda msg=msg: messagebox.showerror("检查失败", msg))
+                return
+            root.after(0, lambda: messagebox.showinfo("固件更新", summary))
+
+        threading.Thread(target=do, daemon=True).start()
+
     action_row = ttk.Frame(frm); action_row.pack(fill="x", pady=(4, 8))
     ttk.Button(action_row, text="刷新状态", command=refresh_status_labels).pack(side="left")
-    ttk.Button(action_row, text="打开日志目录", command=open_log_folder).pack(side="left", padx=6)
+    ttk.Button(action_row, text="检查更新", command=check_firmware_update).pack(side="left", padx=6)
+    ttk.Button(action_row, text="打开日志目录", command=open_log_folder).pack(side="left")
     ttk.Button(action_row, text="测试 Claude", command=lambda: test_target("target_window", "Claude")).pack(side="right")
     ttk.Button(action_row, text="测试 Codex", command=lambda: test_target("codex_target_window", "Codex")).pack(side="right", padx=6)
 
@@ -1025,6 +1050,7 @@ def open_config_dialog():
             "udp_port": udp_port,
             "discovery_enabled": discovery_var.get(),
             "autostart": autostart_var.get(),
+            "firmware_manifest_url": manifest_var.get().strip() or DEFAULT_MANIFEST_URL,
             "codex_session_watch_enabled": CONFIG.get("codex_session_watch_enabled", False),
             # Preserve the bound target window across config-dialog saves.
             "target_window": CONFIG.get("target_window"),
@@ -1055,6 +1081,23 @@ def open_log_folder(icon=None, item=None):
         os.startfile(_THIS_DIR)
     except Exception as e:
         print(f"[warn] open log folder: {e}")
+
+
+def on_check_firmware_update(icon=None, item=None):
+    def do():
+        url = CONFIG.get("firmware_manifest_url") or DEFAULT_MANIFEST_URL
+        try:
+            manifest = fetch_manifest(url)
+            version = str(manifest.get("version") or "未知版本")
+            notes = str(manifest.get("notes") or "").strip()
+            message = f"最新固件 {version}"
+            if notes:
+                message = f"{message}: {notes[:60]}"
+            show_tray_feedback(icon, "固件更新", message, restore_after=8.0)
+        except Exception as e:
+            show_tray_feedback(icon, "检查更新失败", str(e)[:80], restore_after=8.0)
+
+    threading.Thread(target=do, daemon=True).start()
 
 
 def _tray_base_title():
@@ -1244,6 +1287,7 @@ def start_tray():
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("打开配置", lambda icon, item: threading.Thread(
             target=open_config_dialog, daemon=True).start()),
+        pystray.MenuItem("检查固件更新", on_check_firmware_update),
         pystray.MenuItem("打开日志文件夹", open_log_folder),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("退出", on_quit),

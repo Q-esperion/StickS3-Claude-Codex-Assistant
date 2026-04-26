@@ -4,9 +4,12 @@
 #include "secrets.h"
 #endif
 
-#ifndef APP_VERSION
-#define APP_VERSION "0.1.2"
+// Keep firmware version in this tracked file only. Local secrets.h may carry
+// private URLs/keys, but must not change the version used by OTA comparison.
+#ifdef APP_VERSION
+#undef APP_VERSION
 #endif
+#define APP_VERSION "0.1.3"
 
 #ifndef REMOTE_OTA_MANIFEST_URL
 #define REMOTE_OTA_MANIFEST_URL ""

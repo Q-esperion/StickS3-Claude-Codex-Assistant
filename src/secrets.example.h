@@ -9,4 +9,3 @@
 // Optional GitHub Release remote OTA manifest.
 // Example:
 // #define REMOTE_OTA_MANIFEST_URL "https://github.com/OWNER/REPO/releases/latest/download/manifest.json"
-// #define APP_VERSION "1.0.0"

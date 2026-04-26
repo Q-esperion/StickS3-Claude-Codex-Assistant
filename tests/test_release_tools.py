@@ -1,6 +1,9 @@
 import hashlib
+import contextlib
 import json
+import shutil
 import sys
+import uuid
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -9,8 +12,28 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "helper"))
 
-from release_tools import build_manifest, project_version, read_macro, write_release_bundle
+from release_tools import (
+    build_manifest,
+    project_version,
+    read_macro,
+    release_tag_for_version,
+    sync_latest_snapshot,
+    write_release_bundle,
+)
 from status_logic import clean_text, codex_phase_for_text
+from update_check import format_size, format_update_summary
+
+
+@contextlib.contextmanager
+def temp_workspace():
+    base = ROOT / ".test_tmp"
+    base.mkdir(exist_ok=True)
+    path = base / f"test_{uuid.uuid4().hex}"
+    path.mkdir()
+    try:
+        yield str(path)
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 class ReleaseToolsTest(unittest.TestCase):
@@ -44,6 +67,48 @@ class ReleaseToolsTest(unittest.TestCase):
 
     def test_project_version_has_default(self):
         self.assertRegex(project_version(ROOT), r"^\d+\.\d+\.\d+")
+
+    def test_project_version_ignores_local_secrets_version(self):
+        with temp_workspace() as tmp:
+            root = Path(tmp)
+            src = root / "src"
+            src.mkdir()
+            (src / "remote_ota_config.h").write_text('#define APP_VERSION "1.2.3"\n', encoding="utf-8")
+            (src / "secrets.h").write_text('#define APP_VERSION "9.9.9"\n', encoding="utf-8")
+            self.assertEqual(project_version(root), "1.2.3")
+
+    def test_release_tag_for_version(self):
+        self.assertEqual(release_tag_for_version("1.2.3"), "v1.2.3")
+        self.assertEqual(release_tag_for_version("v1.2.3"), "v1.2.3")
+
+    def test_sync_latest_snapshot(self):
+        with temp_workspace() as tmp:
+            root = Path(tmp)
+            out = root / "dist" / "release"
+            out.mkdir(parents=True)
+            (out / "firmware.bin").write_bytes(b"fw")
+            (out / "manifest.json").write_text('{"version":"1.0.0"}\n', encoding="utf-8")
+            latest = root / "releases" / "latest"
+            sync_latest_snapshot(out, latest)
+            self.assertEqual((latest / "firmware.bin").read_bytes(), b"fw")
+            self.assertEqual(json.loads((latest / "manifest.json").read_text(encoding="utf-8"))["version"], "1.0.0")
+
+
+class UpdateCheckTest(unittest.TestCase):
+    def test_format_size(self):
+        self.assertEqual(format_size(1024), "1 KB")
+        self.assertEqual(format_size(2 * 1024 * 1024), "2.0 MB")
+
+    def test_format_update_summary(self):
+        summary = format_update_summary({
+            "version": "1.2.3",
+            "size": 2048,
+            "notes": "hello",
+            "url": "https://example.com/fw.bin",
+        })
+        self.assertIn("最新固件: 1.2.3", summary)
+        self.assertIn("大小: 2 KB", summary)
+        self.assertIn("说明: hello", summary)
 
 
 class StatusLogicTest(unittest.TestCase):

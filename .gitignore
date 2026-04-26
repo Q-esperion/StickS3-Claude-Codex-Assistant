@@ -33,6 +33,14 @@ USER_MANUAL.html
 # Generated release bundle
 dist/release/
 
+# Keep only the current latest firmware snapshot in git. Archived binaries
+# belong in GitHub Releases.
+releases/*
+!releases/latest/
+!releases/latest/firmware.bin
+!releases/latest/manifest.json
+!releases/README.md
+
 # Local/vendor reference copies
 StickS3.pdf
 StickS3.txt

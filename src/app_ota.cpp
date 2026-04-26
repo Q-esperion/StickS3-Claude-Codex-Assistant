@@ -312,7 +312,7 @@ static bool downloadAndApplyRemoteOTA(const RemoteManifest& m, String& err) {
 
   int content_len = http.getSize();
   if (content_len > 0 && (uint32_t)content_len != m.size) {
-    err = "固件大小不匹配";
+    err = String("固件大小不匹配 ") + content_len + "/" + m.size;
     http.end();
     return false;
   }
@@ -339,7 +339,7 @@ static bool downloadAndApplyRemoteOTA(const RemoteManifest& m, String& err) {
     if (avail <= 0) {
       if (!http.connected() && written >= m.size) break;
       if (millis() - last_data_ms > 15000) {
-        err = "下载超时";
+        err = String("下载超时 ") + written + "/" + m.size;
         Update.abort();
         http.end();
         mbedtls_sha256_free(&sha_ctx);
@@ -388,7 +388,7 @@ static bool downloadAndApplyRemoteOTA(const RemoteManifest& m, String& err) {
   mbedtls_sha256_free(&sha_ctx);
 
   if (written != m.size) {
-    err = "下载不完整";
+    err = String("下载不完整 ") + written + "/" + m.size;
     Update.abort();
     return false;
   }
@@ -396,7 +396,7 @@ static bool downloadAndApplyRemoteOTA(const RemoteManifest& m, String& err) {
   if (m.sha256.length() == 64) {
     String actual = sha256Hex(hash);
     if (!actual.equalsIgnoreCase(m.sha256)) {
-      err = "SHA256 校验失败";
+      err = String("SHA256 校验失败 ") + actual.substring(0, 8);
       Update.abort();
       return false;
     }
@@ -418,6 +418,7 @@ void app_remote_ota_run() {
   bool longpress_sent = false;
 
   if (WiFi.status() != WL_CONNECTED) {
+    stick_log("warn", "remote ota: wifi not connected");
     drawRemoteOTAScreen("WiFi 未连接", "", -2);
     delay(1800);
     return;
@@ -425,6 +426,7 @@ void app_remote_ota_run() {
 
   String manifest_url = REMOTE_OTA_MANIFEST_URL;
   if (manifest_url.length() == 0) {
+    stick_log("warn", "remote ota: manifest not configured");
     drawRemoteOTAScreen("远程 OTA 未配置", "请设置 manifest URL", -2);
     delay(2200);
     return;
@@ -456,7 +458,9 @@ void app_remote_ota_run() {
       RemoteManifest manifest;
       String err;
       drawRemoteOTAScreen("读取 manifest", "", 0);
+      stick_log("info", String("remote ota: checking ") + manifest_url);
       if (!fetchRemoteManifest(manifest, err)) {
+        stick_log("warn", String("remote ota: check failed: ") + err);
         drawRemoteOTAScreen("检查失败", err.c_str(), -2);
         delay(2200);
         M5.Speaker.begin();
@@ -467,6 +471,7 @@ void app_remote_ota_run() {
       if (manifest.version.length() > 0 && manifest.version == APP_VERSION) {
         char same[64];
         snprintf(same, sizeof(same), "当前/最新 %s", manifest.version.c_str());
+        stick_log("info", String("remote ota: already latest ") + manifest.version);
         drawRemoteOTAScreen("已经是最新版", same, -1);
         delay(1800);
         M5.Speaker.begin();
@@ -480,6 +485,9 @@ void app_remote_ota_run() {
       snprintf(found, sizeof(found), "当前 %s  最新 %s\n固件大小 %s", APP_VERSION,
                manifest.version.length() ? manifest.version.c_str() : "new",
                size_buf);
+      stick_log("info", String("remote ota: found ")
+                       + (manifest.version.length() ? manifest.version : "new")
+                       + " size=" + String(manifest.size));
       drawRemoteOTAScreen("发现新版本", found, -1);
       delay(900);
 
@@ -497,6 +505,7 @@ void app_remote_ota_run() {
       delay(500);
 
       if (!downloadAndApplyRemoteOTA(manifest, err)) {
+        stick_log("error", String("remote ota: upgrade failed: ") + err);
         drawRemoteOTAScreen("升级失败", err.c_str(), -2);
         delay(2600);
         M5.Speaker.begin();
@@ -505,6 +514,8 @@ void app_remote_ota_run() {
       }
 
       drawRemoteOTAScreen("升级成功", "正在重启", 100);
+      stick_log("info", String("remote ota: upgrade ok ") + APP_VERSION + " -> "
+                         + (manifest.version.length() ? manifest.version : "new"));
       delay(1200);
       ESP.restart();
     }

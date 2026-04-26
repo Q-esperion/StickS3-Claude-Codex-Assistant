@@ -20,12 +20,25 @@ def read_macro(path: Path, name: str) -> str | None:
 
 
 def project_version(project_root: Path) -> str:
-    src = project_root / "src"
-    for path in (src / "secrets.h", src / "remote_ota_config.h"):
-        value = read_macro(path, "APP_VERSION")
-        if value:
-            return value
+    value = read_macro(project_root / "src" / "remote_ota_config.h", "APP_VERSION")
+    if value:
+        return value
     return "0.0.0"
+
+
+def release_tag_for_version(version: str) -> str:
+    version = version.strip()
+    if not version:
+        raise ValueError("empty version")
+    return version if version.startswith("v") else f"v{version}"
+
+
+def load_manifest(path: Path) -> dict:
+    with path.open(encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"manifest must be a JSON object: {path}")
+    return data
 
 
 def sha256_file(path: Path) -> str:
@@ -70,3 +83,12 @@ def write_release_bundle(
         shutil.copy2(helper_exe, out_dir / helper_exe.name)
 
     return manifest
+
+
+def sync_latest_snapshot(release_dir: Path, latest_dir: Path) -> None:
+    latest_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("firmware.bin", "manifest.json"):
+        src = release_dir / name
+        if not src.exists():
+            raise FileNotFoundError(src)
+        shutil.copy2(src, latest_dir / name)

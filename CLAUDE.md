@@ -26,6 +26,7 @@ M5Stack StickS3（ESP32-S3-PICO-1-N8R8，8MB Flash + 8MB PSRAM，1.14" LCD 135x2
 │   ├── type_server.py                # Windows 托盘助手（粘贴 + /status + /log + UDP 发现）
 │   ├── hook_notify.py                # Claude Code 钩子脚本 → POST /status
 │   ├── prepare_release.py            # 编译 release 环境并生成 firmware.bin + manifest.json
+│   ├── publish_release.py            # 使用本机 GitHub 凭据创建/更新 GitHub Release
 │   ├── stick_log.txt                 # 板子和助手的事件日志（调试用）
 │   └── dist/                         # PyInstaller 输出目录（exe 建议放 GitHub Release）
 └── downloads/                        # PlatformIO 工具链离线包（可忽略）
@@ -79,7 +80,7 @@ python -m platformio run -d . -t upload --upload-port <板子IP>
 
 ## 远程 OTA（设置里触发）
 
-入口在 **设置 → 远程 OTA**。`app_remote_ota_run()` 读取 `REMOTE_OTA_MANIFEST_URL`，下载 JSON manifest，字段为 `version` / `url` / `sha256` / `size` / 可选 `notes`。版本等于 `APP_VERSION` 时提示已是最新版；否则先显示更新说明，再用 HTTPS 下载 `firmware.bin`，按 `size` 写入 `Update` OTA 分区，并计算 SHA256 校验。默认 `REMOTE_OTA_MANIFEST_URL` 为空，会提示未配置；可在 `src/secrets.h` 或 build flags 里定义。当前 HTTPS 用 `WiFiClientSecure::setInsecure()`，依赖 SHA256 做固件完整性校验。发布包可用 `python helper\prepare_release.py --repo OWNER/REPO --notes "..."` 生成到 `dist/release/`。
+入口在 **设置 → 远程 OTA**。`app_remote_ota_run()` 读取 `REMOTE_OTA_MANIFEST_URL`，下载 JSON manifest，字段为 `version` / `url` / `sha256` / `size` / 可选 `notes`。版本等于 `APP_VERSION` 时提示已是最新版；否则先显示更新说明，再用 HTTPS 下载 `firmware.bin`，按 `size` 写入 `Update` OTA 分区，并计算 SHA256 校验。默认 `REMOTE_OTA_MANIFEST_URL` 为空，会提示未配置；可在 `src/secrets.h` 或 build flags 里定义。当前 HTTPS 用 `WiFiClientSecure::setInsecure()`，依赖 SHA256 做固件完整性校验。发布包可用 `python helper\prepare_release.py --repo OWNER/REPO --notes "..."` 生成到 `dist/release/`；一键发布用 `python helper\publish_release.py --repo OWNER/REPO --notes "..." --sync-latest`，脚本走本机 Git Credential Manager，不依赖 `gh` token。
 
 ## 关键依赖版本
 
@@ -164,7 +165,7 @@ PC 助手是 **Windows 托盘程序**，常驻运行两种启动方式：
 
 常见误识别替换表在 `type_server.py` 的 `CORRECTIONS` 里（如 `克拉克 → Claude`，`cloud code → Claude Code`），托盘里改完保存即可生效，不用重烧板子。
 
-**讯飞 STT 凭据不再硬编码在固件里**。WiFiManager 配网页提供"一键粘贴三项"和单独的 `APPID`、`APISecret`、`APIKey` 输入框，保存到 NVS namespace `xfyun`，键名分别是 `appid` / `secret` / `key`。`xfyun_load_credentials()` 优先读取 NVS；只有 NVS 三项不完整时才使用可选 `src/secrets.h` 默认值。仓库只提供 `src/secrets.example.h` 模板，真实 `src/secrets.h` 已加入 `.gitignore`，开源时不要提交。缺任何一项会提示 `请先配讯飞 API`；讯飞握手 `HTTP 401` 会提示 `讯飞鉴权失败 401`，通常是 `APISecret` / `APIKey` 填反或不是同一个 IAT 应用。
+**讯飞 STT 凭据不再硬编码在固件里**。WiFiManager 配网页提供"一键粘贴三项"和单独的 `APPID`、`APISecret`、`APIKey` 输入框，保存到 NVS namespace `xfyun`，键名分别是 `appid` / `secret` / `key`。`xfyun_load_credentials()` 优先读取 NVS；只有 NVS 三项不完整时才使用可选 `src/secrets.h` 默认值。仓库只提供 `src/secrets.example.h` 模板，真实 `src/secrets.h` 已加入 `.gitignore`，开源时不要提交。`APP_VERSION` 只维护在 `src/remote_ota_config.h`，不要放进 `src/secrets.h`。缺任何一项会提示 `请先配讯飞 API`；讯飞握手 `HTTP 401` 会提示 `讯飞鉴权失败 401`，通常是 `APISecret` / `APIKey` 填反或不是同一个 IAT 应用。
 
 ## Claude 活动实时显示
 

@@ -88,6 +88,12 @@ python -m platformio run -d . -t upload --upload-port 设备IP
 python helper\prepare_release.py --repo OWNER/REPO --notes "本次更新说明"
 ```
 
+一键生成并发布到 GitHub Release（使用本机 Git Credential Manager 凭据，不依赖 `gh` token）：
+
+```powershell
+python helper\publish_release.py --repo OWNER/REPO --notes "本次更新说明" --sync-latest
+```
+
 ## PC 助手
 
 Claude / Codex 小秘书需要运行 Windows 助手：
@@ -102,7 +108,7 @@ python helper\type_server.py
 StickS3ClaudeCodexHelper.exe
 ```
 
-右下角托盘图标可以打开配置、查看日志、绑定 Claude/Codex 输入目标。配置窗口里也能查看当前绑定状态，并对 Claude/Codex 分别做测试粘贴。
+右下角托盘图标可以打开配置、查看日志、检查固件更新、绑定 Claude/Codex 输入目标。配置窗口里也能查看当前绑定状态，并对 Claude/Codex 分别做测试粘贴。
 
 开机自启：
 
@@ -126,6 +132,7 @@ StickS3ClaudeCodexHelper.exe
 - `src/secrets.h` 是本地私有文件，已加入 `.gitignore`
 - 推荐通过 WiFi 配网页保存讯飞 API
 - 远程 OTA 地址也可写在 `src/secrets.h`
+- 固件版本号只改 `src/remote_ota_config.h`，不要在 `src/secrets.h` 里定义 `APP_VERSION`
 
 ## 说明
 
