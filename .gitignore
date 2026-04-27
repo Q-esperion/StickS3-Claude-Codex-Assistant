@@ -3,7 +3,7 @@
 downloads/
 memory/
 upload.log
-
+venv/
 # PyInstaller build staging + cached logs/config
 helper/build/
 helper/__pycache__/
@@ -12,6 +12,9 @@ helper/config.json
 helper/dist/*.exe
 helper/dist/config.json
 helper/dist/stick_log.txt
+helper/dist/
+helper/config_ubuntu.json
+helper/stick_log_ubuntu.txt
 
 # MacOS / editor cruft
 .DS_Store
